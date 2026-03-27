@@ -1,0 +1,495 @@
+"use client";
+import { useState, useMemo, useCallback, useRef, useEffect } from "react";
+import { createClient } from "@supabase/supabase-js";
+
+const supabase = createClient(
+  process.env.NEXT_PUBLIC_SUPABASE_URL,
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+);
+
+// =============================================
+// Gemini API
+// =============================================
+async function callGemini(imageBase64, mimeType, sections, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-04-17:generateContent?key=${apiKey}`;
+  const gradingContext = sections.map((s) =>
+    `【${s.title}】\n` + s.questions.map((q, qi) =>
+      `設問${qi + 1}: ${q.q}\n模範解答: ${q.ans}\n採点基準: ${q.criteria}\n配点: ${q.pts}点`
+    ).join("\n")
+  ).join("\n\n");
+
+  const payload = {
+    contents: [{ parts: [
+      { text: `【採点基準】\n${gradingContext}` },
+      { inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } }
+    ]}],
+    systemInstruction: { parts: [{ text: `あなたは採点の専門家です。答案画像を読み取り採点してください。必ず以下のJSONのみ返してください。
+{
+  "student_name": "氏名（不明なら氏名不明）",
+  "results": [{ "section": "大問名", "q_idx": 0, "score": 点数, "max_score": 満点, "feedback": "根拠" }],
+  "total_score": 合計点,
+  "overall_comment": "総合コメント"
+}` }] },
+    generationConfig: { response_mime_type: "application/json", temperature: 0.1 }
+  };
+
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
+  const data = await res.json();
+  return JSON.parse(data.candidates[0].content.parts[0].text);
+}
+
+// =============================================
+// 定数
+// =============================================
+const SUBJECT_COLORS = {
+  国語: "bg-orange-100 text-orange-700 border-orange-200",
+  数学: "bg-blue-100 text-blue-700 border-blue-200",
+  英語: "bg-purple-100 text-purple-700 border-purple-200",
+  外国語: "bg-purple-100 text-purple-700 border-purple-200",
+  理科: "bg-green-100 text-green-700 border-green-200",
+  社会: "bg-amber-100 text-amber-700 border-amber-200",
+  地理歴史: "bg-rose-100 text-rose-700 border-rose-200",
+};
+const STATUS_CONFIG = {
+  未着手: { color: "bg-slate-100 text-slate-500", dot: "bg-slate-400" },
+  採点中: { color: "bg-amber-100 text-amber-700", dot: "bg-amber-500" },
+  採点完了: { color: "bg-emerald-100 text-emerald-700", dot: "bg-emerald-500" },
+};
+const genId = () => Math.random().toString(36).slice(2);
+const fileToBase64 = (f) => new Promise((res, rej) => {
+  const r = new FileReader(); r.onload = () => res(r.result.split(",")[1]); r.onerror = rej; r.readAsDataURL(f);
+});
+
+// =============================================
+// メインApp
+// =============================================
+export default function App() {
+  const [screen, setScreen] = useState("login");
+  const [tab, setTab] = useState("dashboard");
+  const [school, setSchool] = useState(null);
+  const [geminiKey, setGeminiKey] = useState("");
+  const [tests, setTests] = useState([]);
+  const [classes, setClasses] = useState([]);
+  const [subjects, setSubjects] = useState([]);
+  const [selectedTest, setSelectedTest] = useState(null);
+  const [toast, setToast] = useState(null);
+  const [loadingData, setLoadingData] = useState(false);
+
+  const notify = useCallback((msg, type = "success") => {
+    setToast({ msg, type });
+    setTimeout(() => setToast(null), 3500);
+  }, []);
+
+  useEffect(() => {
+    if (!school) return;
+    setLoadingData(true);
+    Promise.all([
+      supabase.from("tests").select("*").eq("school_id", school.id).order("created_at", { ascending: false }),
+      supabase.from("school_settings").select("*").eq("school_id", school.id).single(),
+    ]).then(([{ data: testsData, error: te }, { data: settings, error: se }]) => {
+      if (te) console.error(te);
+      else setTests((testsData || []).map(t => ({ ...t, sections: t.sections || [] })));
+      if (!se && settings) {
+        setClasses(settings.classes || []);
+        setSubjects(settings.subjects || []);
+      }
+    }).finally(() => setLoadingData(false));
+  }, [school]);
+
+  const handleLogin = async (code, password) => {
+    const { data, error } = await supabase.from("schools").select("*").eq("code", code).eq("password_hash", password);
+    if (error || !data?.length) { notify("IDまたはパスワードが違います", "error"); return; }
+    setSchool(data[0]);
+    setScreen("main");
+    setTab("dashboard");
+  };
+
+  const handleSaveTest = async (testData) => {
+    const { data, error } = await supabase.from("tests").insert({ ...testData, school_id: school.id, status: "未着手" }).select().single();
+    if (error) { notify(error.message, "error"); return null; }
+    setTests(prev => [data, ...prev]);
+    notify("テストを保存しました");
+    return data;
+  };
+
+  const handleSaveResults = async (testId, results) => {
+    const rows = results.map(r => ({
+      test_id: testId, school_id: school.id,
+      student_name: r.student_name, file_name: r.fileName || "",
+      total_score: r.total_score || 0, results: r.results || [],
+      overall_comment: r.overall_comment || "", manually_adjusted: false,
+    }));
+    const { error: re } = await supabase.from("grading_results").insert(rows);
+    if (re) { notify(re.message, "error"); return; }
+    const { error: te } = await supabase.from("tests").update({ status: "採点完了" }).eq("id", testId);
+    if (te) { notify(te.message, "error"); return; }
+    setTests(prev => prev.map(t => t.id === testId ? { ...t, status: "採点完了" } : t));
+    notify("採点結果をDBに保存しました");
+  };
+
+  const handleDeleteTest = async (testId) => {
+    const { error } = await supabase.from("tests").delete().eq("id", testId);
+    if (error) { notify(error.message, "error"); return; }
+    setTests(prev => prev.filter(t => t.id !== testId));
+    notify("テストを削除しました");
+  };
+
+  const handleSaveSettings = async (newClasses, newSubjects) => {
+    const { data: existing } = await supabase.from("school_settings").select("school_id").eq("school_id", school.id).single();
+    const payload = { school_id: school.id, classes: newClasses, subjects: newSubjects, updated_at: new Date().toISOString() };
+    if (existing) {
+      await supabase.from("school_settings").update(payload).eq("school_id", school.id);
+    } else {
+      await supabase.from("school_settings").insert(payload);
+    }
+    setClasses(newClasses); setSubjects(newSubjects);
+    notify("設定を保存しました");
+  };
+
+  if (screen === "login") return <LoginScreen onLogin={handleLogin} toast={toast} />;
+
+  return (
+    <div className="min-h-screen bg-[#F4F6FA] flex font-sans text-slate-900">
+      {toast && (
+        <div className={`fixed top-5 right-5 z-[100] px-5 py-3.5 rounded-2xl shadow-2xl font-bold text-sm flex items-center gap-2.5 ${toast.type === "error" ? "bg-red-600 text-white" : "bg-emerald-600 text-white"}`}>
+          {toast.type === "error" ? "⚠️" : "✅"} {toast.msg}
+        </div>
+      )}
+      <Sidebar tab={tab} setTab={(t) => { setTab(t); setScreen("main"); }} school={school} geminiKey={geminiKey} />
+      <main className="flex-1 overflow-y-auto h-screen">
+        <div className="max-w-5xl mx-auto p-6 md:p-10">
+          {loadingData ? (
+            <div className="flex items-center justify-center h-64">
+              <div className="animate-spin w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full" />
+            </div>
+          ) : (
+            <>
+              {screen === "create" && <CreateTest subjects={subjects} classes={classes} onSave={async (d) => { const t = await handleSaveTest(d); if (t) { setSelectedTest(t); setScreen("upload"); } }} onCancel={() => setScreen("main")} />}
+              {screen === "upload" && <UploadScreen test={selectedTest} geminiKey={geminiKey} onComplete={(results) => { handleSaveResults(selectedTest.id, results); setSelectedTest({ ...selectedTest, status: "採点完了" }); setScreen("result"); }} onBack={() => setScreen("main")} notify={notify} />}
+              {screen === "result" && <ResultScreen testId={selectedTest?.id} testMeta={tests.find(t => t.id === selectedTest?.id) || selectedTest} notify={notify} onBack={() => setScreen("main")} />}
+              {screen === "main" && tab === "settings" && <SettingsPage classes={classes} subjects={subjects} geminiKey={geminiKey} setGeminiKey={setGeminiKey} onSave={handleSaveSettings} notify={notify} />}
+              {screen === "main" && tab !== "settings" && <Dashboard tests={tests} tab={tab} onNew={() => setScreen("create")} onSelect={(t) => { setSelectedTest(t); setScreen(t.status === "未着手" ? "upload" : "result"); }} onDelete={handleDeleteTest} />}
+            </>
+          )}
+        </div>
+      </main>
+    </div>
+  );
+}
+
+function LoginScreen({ onLogin, toast }) {
+  const [id, setId] = useState(""); const [pw, setPw] = useState(""); const [loading, setLoading] = useState(false);
+  const submit = async () => { setLoading(true); await onLogin(id, pw); setLoading(false); };
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-blue-950 p-6 relative overflow-hidden">
+      <div className="absolute inset-0 pointer-events-none">
+        <div className="absolute top-1/3 left-1/4 w-96 h-96 bg-blue-600/10 rounded-full blur-3xl" />
+        <div className="absolute bottom-1/4 right-1/4 w-64 h-64 bg-purple-600/10 rounded-full blur-3xl" />
+      </div>
+      {toast && <div className={`fixed top-5 right-5 z-50 px-5 py-3.5 rounded-2xl shadow-2xl font-bold text-sm ${toast.type === "error" ? "bg-red-600 text-white" : "bg-emerald-600 text-white"}`}>{toast.msg}</div>}
+      <div className="relative bg-white/[0.04] backdrop-blur-xl border border-white/10 rounded-[3rem] p-12 w-full max-w-md shadow-2xl">
+        <div className="text-center mb-10">
+          <div className="w-16 h-16 bg-blue-600 rounded-[1.5rem] flex items-center justify-center mx-auto mb-6 shadow-2xl shadow-blue-500/30 text-3xl">✦</div>
+          <p className="text-blue-400 text-[10px] font-black uppercase tracking-[0.4em] mb-2">Ikedayama Shouten</p>
+          <h1 className="text-3xl font-black text-white tracking-tight">AI一括採点システム</h1>
+          <p className="text-slate-500 text-xs mt-2">Advanced Grading Engine 隼</p>
+        </div>
+        <div className="space-y-4">
+          <input value={id} onChange={e => setId(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} className="w-full bg-white/5 border border-white/10 text-white rounded-2xl p-4 font-bold outline-none focus:border-blue-500 placeholder:text-slate-600 transition-all" placeholder="学校コード（例: school01）" />
+          <input type="password" value={pw} onChange={e => setPw(e.target.value)} onKeyDown={e => e.key === "Enter" && submit()} className="w-full bg-white/5 border border-white/10 text-white rounded-2xl p-4 font-bold outline-none focus:border-blue-500 placeholder:text-slate-600 transition-all" placeholder="パスワード" />
+          <button onClick={submit} disabled={loading} className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-60 text-white p-4 rounded-2xl font-black text-base shadow-xl transition-all active:scale-95">
+            {loading ? "認証中..." : "ログイン"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function Sidebar({ tab, setTab, school, geminiKey }) {
+  return (
+    <aside className="w-56 bg-slate-900 flex flex-col shrink-0 h-screen sticky top-0">
+      <div className="p-5 border-b border-white/5">
+        <div className="flex items-center gap-2.5 mb-3">
+          <div className="bg-blue-600 w-8 h-8 rounded-xl flex items-center justify-center text-white font-black text-sm">✦</div>
+          <div><p className="text-[9px] font-black text-slate-500 uppercase tracking-widest leading-none">AI採点</p><p className="text-white font-black text-sm">隼 Engine</p></div>
+        </div>
+        {school && <div className="bg-white/5 border border-white/10 rounded-xl px-3 py-2 text-slate-300 text-xs font-bold truncate">🏫 {school.name}</div>}
+      </div>
+      <nav className="flex-1 p-3 space-y-1">
+        {[{ id: "dashboard", label: "ダッシュボード", icon: "▦" }, { id: "analytics", label: "分析レポート", icon: "↗" }, { id: "settings", label: "設定", icon: "⚙" }].map(item => (
+          <button key={item.id} onClick={() => setTab(item.id)} className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-bold transition-all ${tab === item.id ? "bg-blue-600 text-white shadow-lg" : "text-slate-400 hover:bg-white/5 hover:text-slate-200"}`}>
+            <span>{item.icon}</span>{item.label}
+          </button>
+        ))}
+      </nav>
+      <div className="p-3 space-y-2">
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-xl text-[10px] font-bold ${geminiKey ? "bg-emerald-500/10 text-emerald-400 border border-emerald-500/20" : "bg-amber-500/10 text-amber-400 border border-amber-500/20"}`}>
+          🔑 {geminiKey ? "Gemini接続済み" : "APIキー未設定"}
+        </div>
+        <button onClick={() => window.location.reload()} className="w-full px-3 py-2 bg-white/5 border border-white/10 rounded-xl text-[10px] font-black text-slate-500 hover:text-red-400 transition-all">ログアウト</button>
+      </div>
+    </aside>
+  );
+}
+
+function Dashboard({ tests, tab, onNew, onSelect, onDelete }) {
+  const [search, setSearch] = useState(""); const [filter, setFilter] = useState("all");
+  const stats = useMemo(() => ({ total: tests.length, done: tests.filter(t => t.status === "採点完了").length, inProgress: tests.filter(t => t.status === "採点中").length }), [tests]);
+  const filtered = tests.filter(t => (filter === "all" || t.status === filter) && (t.name.toLowerCase().includes(search.toLowerCase()) || (t.subject || "").includes(search)));
+  if (tab === "analytics") return <AnalyticsPage tests={tests} />;
+  return (
+    <div className="space-y-6">
+      <div className="flex justify-between items-end">
+        <div><h2 className="text-2xl font-black text-slate-800">ダッシュボード</h2><p className="text-slate-400 text-sm mt-1">テストの管理とAI採点の進捗確認</p></div>
+        <button onClick={onNew} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-black text-sm shadow-lg flex items-center gap-2 transition-all active:scale-95">＋ 新規テスト作成</button>
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        {[{ label: "総テスト数", value: stats.total }, { label: "採点完了", value: stats.done }, { label: "採点中", value: stats.inProgress }].map(s => (
+          <div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100"><p className="text-3xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>
+        ))}
+      </div>
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div className="p-4 border-b border-slate-50 flex gap-3 items-center justify-between bg-slate-50/50 flex-wrap">
+          <h3 className="font-black text-slate-700 text-sm">テスト一覧</h3>
+          <div className="flex gap-2">
+            <input value={search} onChange={e => setSearch(e.target.value)} placeholder="テスト名で検索..." className="pl-4 pr-4 py-2 bg-white border border-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-400 w-44" />
+            <select value={filter} onChange={e => setFilter(e.target.value)} className="bg-white border border-slate-100 rounded-xl px-3 py-2 text-sm font-bold outline-none">
+              <option value="all">すべて</option><option value="未着手">未着手</option><option value="採点中">採点中</option><option value="採点完了">採点完了</option>
+            </select>
+          </div>
+        </div>
+        {filtered.length === 0 ? <div className="py-20 text-center text-slate-300 font-black text-sm">テストがありません</div> : (
+          <table className="w-full">
+            <thead><tr className="text-left border-b border-slate-50">{["テスト名", "教科", "ステータス", "実施日", ""].map(h => <th key={h} className="px-5 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {filtered.map(t => (
+                <tr key={t.id} className="hover:bg-slate-50/80 cursor-pointer group transition-all" onClick={() => onSelect(t)}>
+                  <td className="px-5 py-4 font-bold text-slate-800 text-sm">{t.name}</td>
+                  <td className="px-5 py-4"><span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border ${SUBJECT_COLORS[t.subject] || "bg-slate-100 text-slate-500 border-slate-200"}`}>{t.subject}</span></td>
+                  <td className="px-5 py-4"><span className={`flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 rounded-lg w-fit ${STATUS_CONFIG[t.status]?.color}`}><span className={`w-1.5 h-1.5 rounded-full ${STATUS_CONFIG[t.status]?.dot}`} />{t.status}</span></td>
+                  <td className="px-5 py-4 text-xs text-slate-400 font-bold">{t.date}</td>
+                  <td className="px-5 py-4 text-right" onClick={e => e.stopPropagation()}><button onClick={() => { if (window.confirm("削除しますか？")) onDelete(t.id); }} className="p-2 text-slate-200 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50">🗑</button></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CreateTest({ subjects, classes, onSave, onCancel }) {
+  const [info, setInfo] = useState({ name: "", subject: subjects[0] || "国語", classes: [], date: new Date().toISOString().slice(0, 10) });
+  const [sections, setSections] = useState([{ id: genId(), title: "大問1", questions: [{ id: genId(), q: "", ans: "", criteria: "", pts: 20 }] }]);
+  const [errors, setErrors] = useState({}); const [saving, setSaving] = useState(false);
+  const validate = () => { const e = {}; if (!info.name.trim()) e.name = "テスト名を入力してください"; if (!info.classes.length) e.classes = "クラスを選択してください"; sections.forEach((s, si) => s.questions.forEach((q, qi) => { if (!q.q.trim()) e[`q${si}${qi}`] = true; if (!q.criteria.trim()) e[`c${si}${qi}`] = true; })); setErrors(e); return !Object.keys(e).length; };
+  const totalPts = sections.reduce((s, sec) => s + sec.questions.reduce((ss, q) => ss + Number(q.pts || 0), 0), 0);
+  const updateQ = (sid, qid, field, val) => setSections(s => s.map(sec => sec.id !== sid ? sec : { ...sec, questions: sec.questions.map(q => q.id !== qid ? q : { ...q, [field]: val }) }));
+  return (
+    <div className="space-y-6 pb-20">
+      <div className="flex justify-between items-center">
+        <div><h2 className="text-2xl font-black text-slate-800">新規テスト作成</h2><p className="text-slate-400 text-sm mt-1">採点基準を設定してAI採点を準備します</p></div>
+        <div className="flex gap-3">
+          <button onClick={onCancel} className="px-6 py-2.5 text-slate-400 font-bold hover:text-slate-600">キャンセル</button>
+          <button onClick={async () => { if (validate()) { setSaving(true); await onSave({ ...info, sections }); setSaving(false); } }} disabled={saving} className="bg-slate-900 hover:bg-blue-600 disabled:opacity-60 text-white px-8 py-2.5 rounded-xl font-black shadow-lg transition-all">
+            {saving ? "保存中..." : "保存して採点へ →"}
+          </button>
+        </div>
+      </div>
+      <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+        <div className="lg:col-span-2 space-y-1.5">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">テスト名 *</label>
+          <input value={info.name} onChange={e => setInfo({ ...info, name: e.target.value })} className={`w-full bg-slate-50 border rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-400 ${errors.name ? "border-red-300" : "border-slate-100"}`} placeholder="例: 第2回英語小テスト" />
+          {errors.name && <p className="text-red-500 text-xs font-bold">{errors.name}</p>}
+        </div>
+        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">教科</label><select value={info.subject} onChange={e => setInfo({ ...info, subject: e.target.value })} className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-400">{subjects.map(s => <option key={s}>{s}</option>)}</select></div>
+        <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">実施日</label><input type="date" value={info.date} onChange={e => setInfo({ ...info, date: e.target.value })} className="w-full bg-slate-50 border border-slate-100 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-400" /></div>
+        <div className="lg:col-span-4 space-y-1.5">
+          <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest">対象クラス *</label>
+          <div className="flex flex-wrap gap-2">{classes.map(c => <button key={c} onClick={() => setInfo({ ...info, classes: info.classes.includes(c) ? info.classes.filter(i => i !== c) : [...info.classes, c] })} className={`px-4 py-2 rounded-xl text-xs font-black border transition-all ${info.classes.includes(c) ? "bg-blue-600 border-blue-600 text-white" : "border-slate-200 bg-slate-50 text-slate-400 hover:border-slate-300"}`}>{c}</button>)}</div>
+          {errors.classes && <p className="text-red-500 text-xs font-bold">{errors.classes}</p>}
+        </div>
+      </div>
+      <div className="flex justify-end"><div className={`px-5 py-2.5 rounded-xl font-black text-sm border ${totalPts === 100 ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-amber-50 text-amber-700 border-amber-200"}`}>合計配点: {totalPts}点 {totalPts !== 100 && "← 100点推奨"}</div></div>
+      {sections.map((s, si) => (
+        <div key={s.id} className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <div className="flex items-center justify-between px-8 py-5 bg-slate-50/50 border-b border-slate-100">
+            <div className="flex items-center gap-3"><div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center text-white font-black text-sm">{si + 1}</div><input value={s.title} onChange={e => setSections(sections.map(sec => sec.id === s.id ? { ...sec, title: e.target.value } : sec))} className="font-black text-lg bg-transparent outline-none focus:bg-slate-100 px-2 py-1 rounded-lg" /></div>
+            {sections.length > 1 && <button onClick={() => setSections(sections.filter(sec => sec.id !== s.id))} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button>}
+          </div>
+          <div className="p-8 space-y-5">
+            {s.questions.map((q, qi) => (
+              <div key={q.id} className="bg-slate-50 rounded-2xl p-6 space-y-4 border border-slate-100">
+                <div className="flex items-center justify-between"><span className="text-[10px] font-black text-slate-400 uppercase">設問 {qi + 1}</span>{s.questions.length > 1 && <button onClick={() => setSections(sections.map(sec => sec.id === s.id ? { ...sec, questions: sec.questions.filter(qq => qq.id !== q.id) } : sec))} className="text-slate-300 hover:text-red-500">✕</button>}</div>
+                <div className="grid grid-cols-4 gap-4">
+                  <div className="col-span-3 space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase">問題内容 *</label><textarea rows={2} value={q.q} onChange={e => updateQ(s.id, q.id, "q", e.target.value)} className={`w-full bg-white border rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-400 resize-none ${errors[`q${si}${qi}`] ? "border-red-300" : "border-slate-100"}`} placeholder="例: 筆者の主張を100字以内でまとめなさい。" /></div>
+                  <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase">配点</label><div className="flex items-center gap-2 bg-white border border-slate-100 rounded-xl px-3 py-3"><input type="number" value={q.pts} onChange={e => updateQ(s.id, q.id, "pts", e.target.value)} className="w-12 font-black text-xl text-center outline-none text-slate-800" min={0} /><span className="text-slate-400 font-bold text-sm">点</span></div></div>
+                </div>
+                <div className="space-y-1.5"><label className="text-[10px] font-black text-slate-400 uppercase">模範解答（任意）</label><textarea rows={2} value={q.ans} onChange={e => updateQ(s.id, q.id, "ans", e.target.value)} className="w-full bg-white border border-slate-100 rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-400 resize-none" placeholder="模範解答・正解例（AIが参照します）" /></div>
+                <div className="space-y-1.5"><label className="text-[10px] font-black text-blue-600 text-[10px] font-black uppercase tracking-widest">✦ AI採点プロンプト・採点基準 *</label><textarea rows={3} value={q.criteria} onChange={e => updateQ(s.id, q.id, "criteria", e.target.value)} className={`w-full bg-blue-50/50 border rounded-xl p-3 text-sm font-medium outline-none focus:ring-2 focus:ring-blue-400 resize-none ${errors[`c${si}${qi}`] ? "border-red-300" : "border-blue-100"}`} placeholder="例: キーワード「産業革命」が含まれていれば10点。論理的まとめ10点。" /></div>
+              </div>
+            ))}
+            <button onClick={() => setSections(sections.map(sec => sec.id === s.id ? { ...sec, questions: [...sec.questions, { id: genId(), q: "", ans: "", criteria: "", pts: 10 }] } : sec))} className="w-full py-4 rounded-xl border-2 border-dashed border-slate-200 text-slate-300 font-black text-xs hover:border-blue-300 hover:text-blue-400 transition-all">＋ 設問を追加</button>
+          </div>
+        </div>
+      ))}
+      <button onClick={() => setSections([...sections, { id: genId(), title: `大問${sections.length + 1}`, questions: [{ id: genId(), q: "", ans: "", criteria: "", pts: 10 }] }])} className="w-full py-8 rounded-2xl border-2 border-dashed border-blue-100 bg-blue-50/30 text-blue-300 font-black flex flex-col items-center gap-3 hover:bg-blue-50 hover:border-blue-200 hover:text-blue-500 transition-all">
+        <span className="text-2xl">＋</span><span className="text-sm">大問セクションを追加</span>
+      </button>
+    </div>
+  );
+}
+
+function UploadScreen({ test, geminiKey, onComplete, onBack, notify }) {
+  const [files, setFiles] = useState([]); const [running, setRunning] = useState(false);
+  const [progress, setProgress] = useState({ cur: 0, total: 0, status: "" }); const [results, setResults] = useState([]);
+  const [localKey, setLocalKey] = useState(geminiKey || ""); const fileRef = useRef();
+  const handleFiles = (e) => setFiles(prev => [...prev, ...Array.from(e.target.files).filter(f => f.type.startsWith("image/") || f.type === "application/pdf")]);
+  const startGrading = async () => {
+    const key = localKey || geminiKey;
+    if (!key) { notify("Gemini APIキーを入力してください", "error"); return; }
+    if (!files.length) { notify("答案ファイルをアップロードしてください", "error"); return; }
+    if (!test?.sections?.length) { notify("採点基準が設定されていません", "error"); return; }
+    setRunning(true); const all = [];
+    for (let i = 0; i < files.length; i++) {
+      setProgress({ cur: i + 1, total: files.length, status: `${files[i].name} を採点中...` });
+      try { const b64 = await fileToBase64(files[i]); const result = await callGemini(b64, files[i].type, test.sections, key); all.push({ ...result, fileName: files[i].name }); }
+      catch (err) { all.push({ student_name: `エラー(${files[i].name})`, results: [], total_score: 0, overall_comment: err.message, fileName: files[i].name, error: true }); }
+    }
+    setResults(all); setRunning(false);
+  };
+  if (running || results.length > 0) return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-black text-slate-800">{test?.name} — AI採点</h2>
+      {running ? (
+        <div className="bg-white rounded-2xl p-16 shadow-sm border border-slate-100 flex flex-col items-center gap-8">
+          <div className="relative w-32 h-32"><div className="absolute inset-0 border-4 border-slate-100 rounded-full" /><div className="absolute inset-0 border-4 border-blue-600 border-t-transparent rounded-full animate-spin" /><div className="absolute inset-0 flex items-center justify-center font-black text-2xl text-slate-800">{progress.cur}/{progress.total}</div></div>
+          <div className="text-center"><p className="font-black text-slate-800">{progress.status}</p><p className="text-slate-400 text-sm mt-1">Gemini 2.5 Flash が答案を解析中...</p></div>
+          <div className="w-full max-w-md bg-slate-100 rounded-full h-3 overflow-hidden"><div className="h-full bg-blue-600 rounded-full transition-all duration-500" style={{ width: `${(progress.cur / progress.total) * 100}%` }} /></div>
+        </div>
+      ) : (
+        <div className="space-y-4">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-5 flex items-center gap-4"><span className="text-2xl">✅</span><div><p className="font-black text-emerald-800">{results.length}件の採点が完了しました</p><p className="text-emerald-600 text-sm">「保存」を押すとSupabaseのDBに記録されます</p></div></div>
+          {results.map((r, i) => (<div key={i} className={`bg-white rounded-2xl p-5 shadow-sm border ${r.error ? "border-red-200" : "border-slate-100"}`}><div className="flex justify-between items-center mb-2"><div><p className="font-black text-slate-800">{r.student_name}</p><p className="text-xs text-slate-400">{r.fileName}</p></div><span className={`text-3xl font-black ${r.error ? "text-red-500" : "text-slate-900"}`}>{r.total_score}<span className="text-slate-400 text-sm font-bold">点</span></span></div>{r.overall_comment && <p className="text-sm text-slate-500 italic border-t border-slate-50 pt-2">{r.overall_comment}</p>}</div>))}
+          <button onClick={() => onComplete(results)} className="w-full bg-blue-600 hover:bg-blue-700 text-white py-4 rounded-xl font-black text-base shadow-lg transition-all active:scale-95">採点結果をDBに保存して詳細へ →</button>
+        </div>
+      )}
+    </div>
+  );
+  return (
+    <div className="space-y-6 pb-20">
+      <div className="flex justify-between items-center"><div><h2 className="text-2xl font-black text-slate-800">{test?.name}</h2><p className="text-slate-400 text-sm mt-1">答案画像をアップロードしてAI採点を開始</p></div><button onClick={onBack} className="text-slate-400 font-bold hover:text-slate-600 px-4 py-2">← 戻る</button></div>
+      {!geminiKey && (<div className="bg-amber-50 border border-amber-200 rounded-2xl p-5 space-y-3"><p className="font-black text-amber-700">🔑 Gemini APIキーを入力してください</p><input type="password" value={localKey} onChange={e => setLocalKey(e.target.value)} placeholder="AIzaSy..." className="w-full bg-white border border-amber-200 rounded-xl p-3 font-mono text-sm outline-none focus:ring-2 focus:ring-amber-400" /></div>)}
+      <div onDrop={e => { e.preventDefault(); setFiles(prev => [...prev, ...Array.from(e.dataTransfer.files).filter(f => f.type.startsWith("image/") || f.type === "application/pdf")]); }} onDragOver={e => e.preventDefault()} onClick={() => fileRef.current.click()} className="border-2 border-dashed border-slate-200 hover:border-blue-400 bg-white hover:bg-blue-50/30 rounded-2xl p-16 flex flex-col items-center gap-4 cursor-pointer transition-all group">
+        <div className="w-16 h-16 bg-slate-50 group-hover:bg-blue-100 rounded-2xl flex items-center justify-center text-4xl transition-all">📄</div>
+        <div className="text-center"><p className="font-black text-slate-600 group-hover:text-blue-700">クリックまたはドラッグ＆ドロップ</p><p className="text-slate-400 text-sm mt-1">JPG, PNG, PDF（複数可）</p></div>
+        <input ref={fileRef} type="file" multiple accept="image/*,application/pdf" className="hidden" onChange={handleFiles} />
+      </div>
+      {files.length > 0 && (<div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden"><div className="px-5 py-4 border-b border-slate-50 flex justify-between items-center"><span className="font-black text-slate-700 text-sm">{files.length}件選択中</span><button onClick={() => setFiles([])} className="text-xs text-slate-400 hover:text-red-500 font-bold">すべて削除</button></div><div className="divide-y divide-slate-50 max-h-48 overflow-y-auto">{files.map((f, i) => (<div key={i} className="flex items-center justify-between px-5 py-3"><div className="flex items-center gap-3"><span>📷</span><span className="text-sm font-medium text-slate-700">{f.name}</span><span className="text-xs text-slate-400">{(f.size / 1024).toFixed(0)}KB</span></div><button onClick={() => setFiles(files.filter((_, fi) => fi !== i))} className="text-slate-300 hover:text-red-500">✕</button></div>))}</div></div>)}
+      <button onClick={startGrading} disabled={files.length === 0} className="w-full bg-slate-900 hover:bg-blue-600 disabled:bg-slate-200 disabled:text-slate-400 text-white py-5 rounded-xl font-black text-lg shadow-2xl transition-all active:scale-95">✦ {files.length > 0 ? `${files.length}件の答案をAI採点開始` : "答案ファイルをアップロードしてください"}</button>
+    </div>
+  );
+}
+
+function ResultScreen({ testId, testMeta, notify, onBack }) {
+  const [results, setResults] = useState([]); const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState(null); const [editScore, setEditScore] = useState(null);
+  useEffect(() => {
+    if (!testId) return;
+    supabase.from("grading_results").select("*").eq("test_id", testId).order("graded_at", { ascending: false })
+      .then(({ data, error }) => { if (!error) setResults(data || []); }).finally(() => setLoading(false));
+  }, [testId]);
+  const maxTotal = useMemo(() => { if (!testMeta?.sections) return 100; return testMeta.sections.reduce((s, sec) => s + sec.questions.reduce((ss, q) => ss + Number(q.pts || 0), 0), 0); }, [testMeta]);
+  const avg = results.length > 0 ? Math.round(results.reduce((s, r) => s + (r.total_score || 0), 0) / results.length) : 0;
+  const handleAdjust = async () => {
+    const { error } = await supabase.from("grading_results").update({ total_score: editScore, manually_adjusted: true }).eq("id", selected.id);
+    if (error) { notify(error.message, "error"); return; }
+    setResults(results.map(r => r.id === selected.id ? { ...r, total_score: editScore, manually_adjusted: true } : r));
+    notify("スコアを修正しました"); setSelected(null);
+  };
+  const exportCSV = () => {
+    const rows = [["氏名", "合計点", "手動修正", "総合コメント", "採点日時"]];
+    results.forEach(r => rows.push([r.student_name, r.total_score, r.manually_adjusted ? "あり" : "なし", r.overall_comment || "", r.graded_at]));
+    const csv = rows.map(r => r.map(v => `"${String(v).replace(/"/g, '""')}"`).join(",")).join("\n");
+    const blob = new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8;" });
+    const a = document.createElement("a"); a.href = URL.createObjectURL(blob); a.download = `${testMeta?.name}_採点結果.csv`; a.click();
+  };
+  return (
+    <div className="space-y-6 pb-20">
+      <div className="flex items-end justify-between">
+        <div><h2 className="text-2xl font-black text-slate-800">{testMeta?.name} — 採点結果</h2><div className="flex items-center gap-2 mt-1"><span className={`text-[10px] font-black px-2 py-1 rounded-lg border ${SUBJECT_COLORS[testMeta?.subject] || "bg-slate-100 text-slate-500 border-slate-200"}`}>{testMeta?.subject}</span>{testMeta?.classes?.map(c => <span key={c} className="text-xs text-slate-400 font-bold">{c}</span>)}</div></div>
+        <div className="flex gap-3"><button onClick={exportCSV} className="flex items-center gap-2 bg-white border border-slate-200 px-5 py-2.5 rounded-xl font-bold text-sm text-slate-600 hover:border-blue-400 transition-all shadow-sm">📥 CSV出力</button><button onClick={onBack} className="text-slate-400 font-bold hover:text-slate-600 px-4 py-2">← 戻る</button></div>
+      </div>
+      <div className="grid grid-cols-3 gap-4">
+        {[{ label: "採点人数", value: results.length + "名" }, { label: "クラス平均", value: avg + "点" }, { label: "満点", value: maxTotal + "点" }].map(s => (<div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100"><p className="text-2xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}
+      </div>
+      {loading ? <div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full" /></div> : results.length === 0 ? <div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100"><p className="text-slate-300 font-black">採点データがありません</p></div> : (
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+          <table className="w-full">
+            <thead><tr className="text-left border-b border-slate-100 bg-slate-50/50">{["#", "氏名", "合計点", "手動修正", "操作"].map(h => <th key={h} className="px-5 py-3.5 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {results.map((r, i) => (<tr key={r.id} className="hover:bg-slate-50/80 transition-all"><td className="px-5 py-4 text-xs font-black text-slate-300">{i + 1}</td><td className="px-5 py-4 font-bold text-slate-800">{r.student_name}</td><td className="px-5 py-4"><span className="text-2xl font-black text-slate-900">{r.total_score}</span><span className="text-slate-400 text-sm font-bold">/{maxTotal}</span></td><td className="px-5 py-4">{r.manually_adjusted && <span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-lg">修正済み</span>}</td><td className="px-5 py-4"><button onClick={() => { setSelected(r); setEditScore(r.total_score); }} className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black hover:bg-blue-600 transition-all">詳細・修正</button></td></tr>))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {selected && (
+        <div className="fixed inset-0 bg-slate-950/70 backdrop-blur-sm flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-[2.5rem] w-full max-w-2xl shadow-2xl overflow-hidden">
+            <div className="p-8 border-b border-slate-100 flex justify-between items-start"><div><h3 className="text-2xl font-black text-slate-900">{selected.student_name}</h3><p className="text-blue-600 text-xs font-black uppercase tracking-widest mt-1">AI採点詳細レポート</p></div><button onClick={() => setSelected(null)} className="p-2 hover:bg-slate-100 rounded-xl text-xl">✕</button></div>
+            <div className="p-8 max-h-[45vh] overflow-y-auto space-y-3">
+              {(selected.results || []).map((r, i) => (<div key={i} className="bg-slate-50 rounded-2xl p-5 border border-slate-100"><div className="flex justify-between items-center mb-2"><span className="text-[10px] font-black text-slate-400 uppercase">{r.section} · 設問{(r.q_idx || 0) + 1}</span><span className={`font-black text-lg ${r.score >= r.max_score ? "text-emerald-600" : r.score > 0 ? "text-amber-600" : "text-red-500"}`}>{r.score}<span className="text-slate-400 text-sm font-bold">/{r.max_score}</span></span></div><p className="text-sm text-slate-500 font-medium leading-relaxed">{r.feedback}</p></div>))}
+              {selected.overall_comment && (<div className="bg-blue-50 rounded-2xl p-5 border border-blue-100"><p className="text-[10px] font-black text-blue-600 uppercase mb-2">総合コメント</p><p className="text-sm text-slate-600">{selected.overall_comment}</p></div>)}
+            </div>
+            <div className="p-8 border-t border-slate-100 bg-amber-50/50"><p className="text-xs font-bold text-amber-700 mb-3">スコアを手動修正（Supabaseに上書き保存されます）</p><div className="flex gap-4 items-end"><div><label className="text-[10px] font-black text-slate-400 uppercase">最終スコア</label><input type="number" value={editScore} onChange={e => setEditScore(Number(e.target.value))} min={0} max={maxTotal} className="block bg-white border-2 border-amber-200 rounded-xl p-3 text-2xl font-black w-28 text-center mt-1 outline-none focus:ring-4 focus:ring-amber-200" /></div><button onClick={handleAdjust} className="flex-1 bg-amber-600 hover:bg-amber-700 text-white py-4 rounded-xl font-black shadow-lg transition-all active:scale-95">修正してDBに保存</button></div></div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function AnalyticsPage({ tests }) {
+  const done = tests.filter(t => t.status === "採点完了");
+  return (
+    <div className="space-y-6">
+      <h2 className="text-2xl font-black text-slate-800">分析レポート</h2>
+      <div className="grid grid-cols-3 gap-4">
+        {[{ label: "完了テスト数", value: done.length }, { label: "総テスト数", value: tests.length }, { label: "完了率", value: tests.length > 0 ? Math.round(done.length / tests.length * 100) + "%" : "-" }].map(s => (<div key={s.label} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100"><p className="text-3xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}
+      </div>
+      {done.length === 0 ? <div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100"><p className="text-slate-300 font-black">採点完了のテストがありません</p></div>
+        : done.map(t => (<div key={t.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100"><div className="flex justify-between items-center"><div><p className="font-black text-slate-800">{t.name}</p><p className="text-xs text-slate-400 font-bold mt-0.5">{t.subject} · {t.date}</p></div><span className="text-[10px] font-black px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700">採点完了</span></div></div>))}
+    </div>
+  );
+}
+
+function SettingsPage({ classes, subjects, geminiKey, setGeminiKey, onSave, notify }) {
+  const [newCls, setNewCls] = useState(""); const [newSub, setNewSub] = useState(""); const [keyInput, setKeyInput] = useState(geminiKey); const [saving, setSaving] = useState(false);
+  const save = async (c, s) => { setSaving(true); await onSave(c, s); setSaving(false); };
+  return (
+    <div className="space-y-8">
+      <h2 className="text-2xl font-black text-slate-800">設定</h2>
+      <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
+        <h3 className="font-black text-slate-800">🔑 Gemini APIキー設定</h3>
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4 text-xs text-amber-700 font-medium">⚠️ このキーはブラウザ内にのみ保存されます。本番運用時はサーバー側で管理することを推奨します。</div>
+        <div className="flex gap-3"><input type="password" value={keyInput} onChange={e => setKeyInput(e.target.value)} placeholder="AIzaSy..." className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-4 font-mono text-sm outline-none focus:ring-2 focus:ring-blue-400" /><button onClick={() => { setGeminiKey(keyInput); notify("APIキーを保存しました"); }} className="bg-slate-900 text-white px-8 rounded-xl font-black hover:bg-blue-600 transition-all">保存</button></div>
+        {geminiKey && <p className="text-emerald-600 text-sm font-bold">✅ APIキーが設定済みです</p>}
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
+          <h3 className="font-black text-slate-800">📚 教科・科目設定</h3>
+          <div className="flex gap-2"><input value={newSub} onChange={e => setNewSub(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && newSub) { save(classes, [...subjects, newSub]); setNewSub(""); } }} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 英語演習" /><button disabled={saving} onClick={() => { if (newSub) { save(classes, [...subjects, newSub]); setNewSub(""); } }} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
+          <div className="space-y-2 max-h-56 overflow-y-auto">{subjects.map(s => (<div key={s} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{s}</span><button disabled={saving} onClick={() => save(classes, subjects.filter(i => i !== s))} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
+        </div>
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
+          <h3 className="font-black text-slate-800">🏫 クラス設定</h3>
+          <div className="flex gap-2"><input value={newCls} onChange={e => setNewCls(e.target.value)} onKeyDown={e => { if (e.key === "Enter" && newCls) { save([...classes, newCls], subjects); setNewCls(""); } }} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 2年C組" /><button disabled={saving} onClick={() => { if (newCls) { save([...classes, newCls], subjects); setNewCls(""); } }} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
+          <div className="space-y-2 max-h-56 overflow-y-auto">{classes.map(c => (<div key={c} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{c}</span><button disabled={saving} onClick={() => save(classes.filter(i => i !== c), subjects)} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
