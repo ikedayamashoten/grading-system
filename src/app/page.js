@@ -11,7 +11,7 @@ const supabase = createClient(
 // Gemini: 答案採点
 // =============================================
 async function callGemini(imageBase64, mimeType, sections, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const gradingContext = sections.map((s) =>
     `【${s.title}】\n` + s.questions.map((q, qi) => {
       const typeLabel = q.type === "choice" ? "選択肢問題" : q.type === "word" ? "単語・記号（完全一致）" : "記述式";
@@ -38,7 +38,7 @@ async function callGemini(imageBase64, mimeType, sections, apiKey) {
 // Gemini: PDFから問題を自動生成
 // =============================================
 async function callGeminiExtract(pdfBase64, mimeType, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
   const prompt = `この試験問題を読み取り、大問・設問・配点・正解・採点基準を抽出してください。問題の種類も判定してください。必ず以下のJSONのみ返してください。他のテキストは含めないでください。\n{"sections":[{"title":"大問1","questions":[{"type":"essay","q":"問題文","ans":"模範解答","criteria":"採点基準","pts":10}]}]}\ntypeは"essay"(記述式)/"choice"(選択肢)/"word"(単語・記号)のいずれか。`;
   const payload = {
     contents: [{ parts: [
