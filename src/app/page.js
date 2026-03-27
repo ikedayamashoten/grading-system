@@ -10,7 +10,7 @@ const supabase = createClient(
 // Gemini API
 // =============================================
 async function callGemini(imageBase64, mimeType, sections, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.0-flash-lite:generateContent?key=${apiKey}`;
   const gradingContext = sections.map((s) =>
     `【${s.title}】\n` + s.questions.map((q, qi) =>
       `設問${qi + 1}: ${q.q}\n模範解答: ${q.ans}\n採点基準: ${q.criteria}\n配点: ${q.pts}点`
