@@ -18,18 +18,20 @@ async function callGemini(imageBase64, mimeType, sections, apiKey) {
       return `設問${qi+1}(${typeLabel}): ${q.q}\n正解/模範解答: ${q.ans}\n採点基準: ${q.criteria}\n配点: ${q.pts}点`;
     }).join("\n")
   ).join("\n\n");
+  const prompt = `あなたは採点の専門家です。答案画像を読み取り採点してください。単語・記号問題は完全一致のみ正解です。\n【採点基準】\n${gradingContext}\n\n必ず以下のJSONのみ返してください。他のテキストは一切含めないでください。\n{"student_name":"氏名","results":[{"section":"大問名","q_idx":0,"score":点数,"max_score":満点,"feedback":"根拠"}],"total_score":合計点,"overall_comment":"総合コメント"}`;
   const payload = {
     contents: [{ parts: [
-      { text: `【採点基準】\n${gradingContext}\n\n【重要】単語・記号問題は完全一致のみ正解。選択肢問題は選んだ記号が正解と一致すれば満点。` },
+      { text: prompt },
       { inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } }
-    ]}],
-    systemInstruction: { parts: [{ text: `あなたは採点の専門家です。答案画像を読み取り採点してください。必ず以下のJSONのみ返してください。{"student_name":"氏名","results":[{"section":"大問名","q_idx":0,"score":点数,"max_score":満点,"feedback":"根拠"}],"total_score":合計点,"overall_comment":"総合コメント"}` }] },
-    generationConfig: { response_mime_type: "application/json", temperature: 0.1 }
+    ]}]
   };
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
   const data = await res.json();
-  return JSON.parse(data.candidates[0].content.parts[0].text);
+  const text = data.candidates[0].content.parts[0].text;
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("JSONの取得に失敗しました");
+  return JSON.parse(match[0]);
 }
 
 // =============================================
@@ -37,17 +39,20 @@ async function callGemini(imageBase64, mimeType, sections, apiKey) {
 // =============================================
 async function callGeminiExtract(pdfBase64, mimeType, apiKey) {
   const url = `https://generativelanguage.googleapis.com/v1/models/gemini-1.5-flash:generateContent?key=${apiKey}`;
+  const prompt = `この試験問題を読み取り、大問・設問・配点・正解・採点基準を抽出してください。問題の種類も判定してください。必ず以下のJSONのみ返してください。他のテキストは含めないでください。\n{"sections":[{"title":"大問1","questions":[{"type":"essay","q":"問題文","ans":"模範解答","criteria":"採点基準","pts":10}]}]}\ntypeは"essay"(記述式)/"choice"(選択肢)/"word"(単語・記号)のいずれか。`;
   const payload = {
     contents: [{ parts: [
-      { text: `この試験問題PDFまたは画像を読み取り、大問・設問・配点・正解・採点基準を抽出してください。問題の種類も判定してください（記述式/選択肢/単語記号）。必ず以下のJSONのみ返してください。{"sections":[{"title":"大問1","questions":[{"type":"essay","q":"問題文","ans":"模範解答","criteria":"採点基準","pts":10}]}]}typeは"essay"(記述式)/"choice"(選択肢)/"word"(単語・記号)のいずれか。` },
+      { text: prompt },
       { inlineData: { mimeType: mimeType || "application/pdf", data: pdfBase64 } }
-    ]}],
-    generationConfig: { response_mime_type: "application/json", temperature: 0.1 }
+    ]}]
   };
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
   const data = await res.json();
-  return JSON.parse(data.candidates[0].content.parts[0].text);
+  const text = data.candidates[0].content.parts[0].text;
+  const match = text.match(/\{[\s\S]*\}/);
+  if (!match) throw new Error("JSONの取得に失敗しました");
+  return JSON.parse(match[0]);
 }
 
 // =============================================
