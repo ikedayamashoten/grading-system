@@ -3,10 +3,9 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 const supabase = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY
+  "https://tcatrrncukiipogccdnc.supabase.co",
+  "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYXRycm5jdWtpaXBvZ2NjZG5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNzA5ODcsImV4cCI6MjA4OTc0Njk4N30.pbcdWibNAI4r9UmJ4bsale_Lc11HusUH-cSoeAobfZQ"
 );
-
 // =============================================
 // Gemini API
 // =============================================
