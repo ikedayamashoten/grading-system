@@ -22,6 +22,20 @@ async function pdfToImages(file) {
   }
   return images;
 }
+// テンプレート操作
+const fetchTemplates = async (schoolId) => {
+  const { data, error } = await supabase.from("test_templates").select("*").eq("school_id", schoolId).order("created_at", { ascending: false });
+  if (error) throw error;
+  return data || [];
+};
+const saveTemplate = async (schoolId, name, subject, sections) => {
+  const { error } = await supabase.from("test_templates").insert({ school_id: schoolId, name, subject, sections });
+  if (error) throw error;
+};
+const deleteTemplate = async (id) => {
+  const { error } = await supabase.from("test_templates").delete().eq("id", id);
+  if (error) throw error;
+};
 const supabase = createClient(
   "https://tcatrrncukiipogccdnc.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYXRycm5jdWtpaXBvZ2NjZG5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNzA5ODcsImV4cCI6MjA4OTc0Njk4N30.pbcdWibNAI4r9UmJ4bsale_Lc11HusUH-cSoeAobfZQ"
@@ -181,7 +195,7 @@ export default function App() {
       <main className="flex-1 overflow-y-auto h-screen">
         <div className="max-w-5xl mx-auto p-6 md:p-10">
           {loadingData?<div className="flex items-center justify-center h-64"><div className="animate-spin w-10 h-10 border-4 border-blue-600 border-t-transparent rounded-full"/></div>:<>
-            {screen==="create"&&<CreateTest subjects={subjects} classes={classes} geminiKey={geminiKey} onSave={async(d)=>{const t=await handleSaveTest(d);if(t){setSelectedTest(t);setScreen("upload");}}} onCancel={()=>setScreen("main")} notify={notify}/>}
+            {screen==="create"&&<CreateTest subjects={subjects} classes={classes} geminiKey={geminiKey} school={school} onSave={async(d)=>{const t=await handleSaveTest(d);if(t){setSelectedTest(t);setScreen("upload");}}} onCancel={()=>setScreen("main")} notify={notify}/>}
             {screen==="upload"&&<UploadScreen test={selectedTest} geminiKey={geminiKey} onComplete={(results)=>{handleSaveResults(selectedTest.id,results);setSelectedTest({...selectedTest,status:"採点完了"});setScreen("result");}} onBack={()=>setScreen("main")} notify={notify}/>}
             {screen==="result"&&<ResultScreen testId={selectedTest?.id} testMeta={tests.find(t=>t.id===selectedTest?.id)||selectedTest} notify={notify} onBack={()=>setScreen("main")}/>}
             {screen==="main"&&tab==="settings"&&<SettingsPage classes={classes} subjects={subjects} geminiKey={geminiKey} setGeminiKey={setGeminiKey} onSave={handleSaveSettings} notify={notify}/>}
@@ -282,12 +296,47 @@ function Dashboard({tests,tab,onNew,onSelect,onDelete}){
 // =============================================
 // テスト作成（PDF自動生成 + 問題種類選択 + 並び替え）
 // =============================================
-function CreateTest({subjects,classes,geminiKey,onSave,onCancel,notify}){
+function CreateTest({subjects,classes,geminiKey,school,onSave,onCancel,notify}){
   const[info,setInfo]=useState({name:"",subject:subjects[0]||"国語",classes:[],date:new Date().toISOString().slice(0,10)});
   const[sections,setSections]=useState([{id:genId(),title:"大問1",questions:[{id:genId(),type:"essay",q:"",ans:"",criteria:"",pts:20,choices:[""]}]}]);
   const[errors,setErrors]=useState({});const[saving,setSaving]=useState(false);
   const[extracting,setExtracting]=useState(false);
   const pdfRef=useRef();
+  const [templates, setTemplates] = useState([]);
+  const [showTemplates, setShowTemplates] = useState(false);
+  const [savingTemplate, setSavingTemplate] = useState(false);
+  const [templateName, setTemplateName] = useState("");
+
+  useEffect(() => {
+    if (!school?.id) return;
+    fetchTemplates(school.id).then(setTemplates).catch(() => {});
+  }, [school?.id]);
+
+  const handleSaveTemplate = async () => {
+    if (!templateName.trim()) { notify("テンプレート名を入力してください", "error"); return; }
+    setSavingTemplate(true);
+    try {
+      await saveTemplate(school.id, templateName, info.subject, sections);
+      const updated = await fetchTemplates(school.id);
+      setTemplates(updated);
+      setTemplateName("");
+      notify("テンプレートを保存しました");
+    } catch(e) { notify(e.message, "error"); }
+    finally { setSavingTemplate(false); }
+  };
+
+  const handleLoadTemplate = (tmpl) => {
+    setInfo(prev => ({ ...prev, subject: tmpl.subject }));
+    setSections(tmpl.sections.map(s => ({ ...s, id: genId(), questions: s.questions.map(q => ({ ...q, id: genId() })) })));
+    setShowTemplates(false);
+    notify(`「${tmpl.name}」を読み込みました`);
+  };
+
+  const handleDeleteTemplate = async (id, name) => {
+    if (!window.confirm(`「${name}」を削除しますか？`)) return;
+    try { await deleteTemplate(id); setTemplates(templates.filter(t => t.id !== id)); notify("削除しました"); }
+    catch(e) { notify(e.message, "error"); }
+  };
 
   const validate=()=>{
     const e={};
@@ -352,7 +401,49 @@ function CreateTest({subjects,classes,geminiKey,onSave,onCancel,notify}){
         </div>
       </div>
 
-      {/* PDF自動生成バナー */}
+{/* テンプレート */}
+      <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+        <div className="flex items-center justify-between px-6 py-4">
+          <div>
+            <p className="font-black text-slate-800">📋 テンプレート</p>
+            <p className="text-slate-400 text-xs mt-0.5">採点基準・設問構成を保存・再利用できます</p>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={() => setShowTemplates(!showTemplates)} className="px-5 py-2.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl font-black text-sm transition-all">
+              📂 読み込む {templates.length > 0 && <span className="ml-1 bg-blue-600 text-white text-[10px] px-1.5 py-0.5 rounded-full">{templates.length}</span>}
+            </button>
+          </div>
+        </div>
+
+        {/* テンプレート一覧 */}
+        {showTemplates && (
+          <div className="border-t border-slate-100 p-6 space-y-3 bg-slate-50/50">
+            {templates.length === 0 ? (
+              <p className="text-slate-400 text-sm text-center py-4">保存済みのテンプレートがありません</p>
+            ) : templates.map(tmpl => (
+              <div key={tmpl.id} className="flex items-center justify-between bg-white rounded-xl p-4 border border-slate-100 shadow-sm">
+                <div>
+                  <p className="font-black text-slate-800 text-sm">{tmpl.name}</p>
+                  <p className="text-xs text-slate-400 mt-0.5">{tmpl.subject} · {tmpl.sections?.length || 0}大問 · {tmpl.sections?.reduce((s, sec) => s + (sec.questions?.length || 0), 0)}問</p>
+                </div>
+                <div className="flex gap-2">
+                  <button onClick={() => handleLoadTemplate(tmpl)} className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-xl font-black text-xs transition-all">読み込む</button>
+                  <button onClick={() => handleDeleteTemplate(tmpl.id, tmpl.name)} className="px-3 py-2 text-slate-300 hover:text-red-500 transition-colors">🗑</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* テンプレート保存 */}
+        <div className="border-t border-slate-100 px-6 py-4 flex gap-3 items-center bg-slate-50/30">
+          <input value={templateName} onChange={e => setTemplateName(e.target.value)} placeholder="テンプレート名を入力して保存..." className="flex-1 bg-white border border-slate-200 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" onKeyDown={e => e.key === "Enter" && handleSaveTemplate()} />
+          <button onClick={handleSaveTemplate} disabled={savingTemplate || !templateName.trim()} className="px-6 py-3 bg-slate-900 hover:bg-blue-600 disabled:opacity-40 text-white rounded-xl font-black text-sm transition-all">
+            {savingTemplate ? "保存中..." : "💾 保存"}
+          </button>
+        </div>
+      </div>      
+　　　{/* PDF自動生成バナー */}
       <div className="bg-gradient-to-r from-blue-600 to-purple-600 rounded-2xl p-6 text-white">
         <div className="flex items-center justify-between flex-wrap gap-4">
           <div>
