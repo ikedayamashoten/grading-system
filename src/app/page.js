@@ -2,6 +2,26 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
+// PDF→画像変換（1ページ=1生徒）
+async function pdfToImages(file) {
+  const pdfjsLib = await import("pdfjs-dist");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/4.4.168/pdf.worker.min.js`;
+  const arrayBuffer = await file.arrayBuffer();
+  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const images = [];
+  for (let i = 1; i <= pdf.numPages; i++) {
+    const page = await pdf.getPage(i);
+    const viewport = page.getViewport({ scale: 2.0 });
+    const canvas = document.createElement("canvas");
+    canvas.width = viewport.width;
+    canvas.height = viewport.height;
+    const ctx = canvas.getContext("2d");
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    const base64 = canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
+    images.push(base64);
+  }
+  return images;
+}
 const supabase = createClient(
   "https://tcatrrncukiipogccdnc.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYXRycm5jdWtpaXBvZ2NjZG5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNzA5ODcsImV4cCI6MjA4OTc0Njk4N30.pbcdWibNAI4r9UmJ4bsale_Lc11HusUH-cSoeAobfZQ"
@@ -479,11 +499,26 @@ function UploadScreen({test,geminiKey,onComplete,onBack,notify}){
     if(!key){ notify("Gemini APIキーを入力してください","error"); return; }
     if(!files.length){ notify("答案ファイルをアップロードしてください","error"); return; }
     if(!test?.sections?.length){ notify("採点基準が設定されていません","error"); return; }
-    setRunning(true);const all=[];
-    for(let i=0;i<files.length;i++){
-      setProgress({cur:i+1,total:files.length,status:`${files[i].name} を採点中...`});
-      try{ const b64=await fileToBase64(files[i]); const result=await callGemini(b64,files[i].type,test.sections,key); all.push({...result,fileName:files[i].name}); }
-      catch(err){ all.push({student_name:`エラー(${files[i].name})`,results:[],total_score:0,overall_comment:err.message,fileName:files[i].name,error:true}); }
+   setRunning(true);const all=[];
+    // PDFの場合はページ分割して1ページ=1生徒として処理
+    const tasks=[];
+    for(const file of files){
+      if(file.type==="application/pdf"){
+        try{
+          const pages=await pdfToImages(file);
+          pages.forEach((b64,idx)=>tasks.push({b64,mimeType:"image/jpeg",name:`${file.name} (${idx+1}ページ目)`}));
+        }catch(err){ tasks.push({error:true,name:file.name,msg:err.message}); }
+      } else {
+        const b64=await fileToBase64(file);
+        tasks.push({b64,mimeType:file.type,name:file.name});
+      }
+    }
+    for(let i=0;i<tasks.length;i++){
+      const task=tasks[i];
+      setProgress({cur:i+1,total:tasks.length,status:`${task.name} を採点中...`});
+      if(task.error){ all.push({student_name:`エラー(${task.name})`,results:[],total_score:0,overall_comment:task.msg,fileName:task.name,error:true}); continue; }
+      try{ const result=await callGemini(task.b64,task.mimeType,test.sections,key); all.push({...result,fileName:task.name}); }
+      catch(err){ all.push({student_name:`エラー(${task.name})`,results:[],total_score:0,overall_comment:err.message,fileName:task.name,error:true}); }
     }
     setResults(all);setRunning(false);
   };
