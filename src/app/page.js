@@ -28,10 +28,17 @@ async function callGemini(imageBase64, mimeType, sections, apiKey) {
   const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
   if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
   const data = await res.json();
-  const text = data.candidates[0].content.parts[0].text;
+ const text = data.candidates[0].content.parts[0].text;
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSONの取得に失敗しました");
-  return JSON.parse(match[0]);
+  // 最初の完結したJSONオブジェクトのみ抽出
+  let depth = 0, end = 0;
+  for (let i = match.index || 0; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  const jsonStr = text.slice(text.indexOf('{'), end + 1);
+  return JSON.parse(jsonStr);
 }
 
 // =============================================
@@ -52,7 +59,14 @@ async function callGeminiExtract(pdfBase64, mimeType, apiKey) {
   const text = data.candidates[0].content.parts[0].text;
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSONの取得に失敗しました");
-  return JSON.parse(match[0]);
+  // 最初の完結したJSONオブジェクトのみ抽出
+  let depth = 0, end = 0;
+  for (let i = match.index || 0; i < text.length; i++) {
+    if (text[i] === '{') depth++;
+    else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
+  }
+  const jsonStr = text.slice(text.indexOf('{'), end + 1);
+  return JSON.parse(jsonStr);
 }
 
 // =============================================
