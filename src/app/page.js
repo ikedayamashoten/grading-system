@@ -4,10 +4,13 @@ import { createClient } from "@supabase/supabase-js";
 
 // PDF→画像変換（1ページ=1生徒）
 async function pdfToImages(file) {
-  const pdfjsLib = await import("pdfjs-dist");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@4.4.168/build/pdf.worker.min.mjs`;
   const arrayBuffer = await file.arrayBuffer();
-  const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
+  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+    "pdfjs-dist/legacy/build/pdf.worker.mjs",
+    import.meta.url
+  ).toString();
+  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
   const images = [];
   for (let i = 1; i <= pdf.numPages; i++) {
     const page = await pdf.getPage(i);
@@ -17,8 +20,7 @@ async function pdfToImages(file) {
     canvas.height = viewport.height;
     const ctx = canvas.getContext("2d");
     await page.render({ canvasContext: ctx, viewport }).promise;
-    const base64 = canvas.toDataURL("image/jpeg", 0.9).split(",")[1];
-    images.push(base64);
+    images.push(canvas.toDataURL("image/jpeg", 0.9).split(",")[1]);
   }
   return images;
 }
