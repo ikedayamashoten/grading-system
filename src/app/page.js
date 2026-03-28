@@ -576,6 +576,11 @@ function UploadScreen({test,geminiKey,onComplete,onBack,notify}){
 function ResultScreen({testId,testMeta,notify,onBack}){
   const[results,setResults]=useState([]);const[loading,setLoading]=useState(true);
   const[selected,setSelected]=useState(null);const[editScore,setEditScore]=useState(null);
+  const[studentInfo,setStudentInfo]=useState({});// {resultId: {grade,classname,number}}
+
+  const updateStudentInfo=(id,field,val)=>{
+    setStudentInfo(prev=>({...prev,[id]:{...(prev[id]||{}), [field]:val}}));
+  };
   useEffect(()=>{
     if(!testId) return;
     supabase.from("grading_results").select("*").eq("test_id",testId).order("graded_at",{ascending:false}).then(({data,error})=>{if(!error)setResults(data||[]);}).finally(()=>setLoading(false));
