@@ -594,10 +594,40 @@ function ResultScreen({testId,testMeta,notify,onBack}){
     notify("スコアを修正しました");setSelected(null);
   };
   const exportCSV=()=>{
-    const rows=[["氏名","合計点","手動修正","総合コメント","採点日時"]];
-    results.forEach(r=>rows.push([r.student_name,r.total_score,r.manually_adjusted?"あり":"なし",r.overall_comment||"",r.graded_at]));
+    // 設問ヘッダーを動的生成
+    const qHeaders=[];
+    (testMeta?.sections||[]).forEach(sec=>{
+      (sec.questions||[]).forEach((q,qi)=>{
+        qHeaders.push(`${sec.title}-設問${qi+1}(${q.pts}点満点)`);
+      });
+    });
+    const headers=["学年","クラス","出席番号","氏名","合計点","手動修正",...qHeaders,"総合コメント","採点日時"];
+    const rows=[headers];
+    results.forEach(r=>{
+      const info=studentInfo[r.id]||{};
+      // 設問ごとの得点を抽出
+      const qScores=[];
+      (testMeta?.sections||[]).forEach(sec=>{
+        (sec.questions||[]).forEach((_,qi)=>{
+          const found=(r.results||[]).find(res=>res.section===sec.title&&res.q_idx===qi);
+          qScores.push(found?found.score:"");
+        });
+      });
+      rows.push([
+        info.grade||"",
+        info.classname||"",
+        info.number||"",
+        r.student_name,
+        r.total_score,
+        r.manually_adjusted?"あり":"なし",
+        ...qScores,
+        r.overall_comment||"",
+        r.graded_at
+      ]);
+    });
     const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
-    const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`${testMeta?.name}_採点結果.csv`;a.click();
+    const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
+    const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`${testMeta?.name}_採点結果.csv`;a.click();
   };
   return(
     <div className="space-y-6 pb-20">
@@ -608,8 +638,30 @@ function ResultScreen({testId,testMeta,notify,onBack}){
       <div className="grid grid-cols-3 gap-4">{[{label:"採点人数",value:results.length+"名"},{label:"クラス平均",value:avg+"点"},{label:"満点",value:maxTotal+"点"}].map(s=>(<div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100"><p className="text-2xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}</div>
       {loading?<div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"/></div>:results.length===0?<div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100"><p className="text-slate-300 font-black">採点データがありません</p></div>:(
         <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-          <table className="w-full"><thead><tr className="text-left border-b border-slate-100 bg-slate-50/50">{["#","氏名","合計点","手動修正","操作"].map(h=><th key={h} className="px-5 py-3.5 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
-          <tbody className="divide-y divide-slate-50">{results.map((r,i)=>(<tr key={r.id} className="hover:bg-slate-50/80 transition-all"><td className="px-5 py-4 text-xs font-black text-slate-300">{i+1}</td><td className="px-5 py-4 font-bold text-slate-800">{r.student_name}</td><td className="px-5 py-4"><span className="text-2xl font-black text-slate-900">{r.total_score}</span><span className="text-slate-400 text-sm font-bold">/{maxTotal}</span></td><td className="px-5 py-4">{r.manually_adjusted&&<span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-lg">修正済み</span>}</td><td className="px-5 py-4"><button onClick={()=>{setSelected(r);setEditScore(r.total_score);}} className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black hover:bg-blue-600 transition-all">詳細・修正</button></td></tr>))}</tbody></table>
+          <div className="overflow-x-auto">
+          <table className="w-full min-w-[900px]">
+            <thead><tr className="text-left border-b border-slate-100 bg-slate-50/50">
+              {["#","学年","クラス","出席番号","氏名","合計点","手動修正","操作"].map(h=><th key={h} className="px-4 py-3.5 text-[10px] font-black text-slate-400 uppercase tracking-wider whitespace-nowrap">{h}</th>)}
+            </tr></thead>
+            <tbody className="divide-y divide-slate-50">
+              {results.map((r,i)=>{
+                const info=studentInfo[r.id]||{};
+                return(
+                <tr key={r.id} className="hover:bg-slate-50/80 transition-all">
+                  <td className="px-4 py-3 text-xs font-black text-slate-300">{i+1}</td>
+                  <td className="px-4 py-3"><input value={info.grade||""} onChange={e=>updateStudentInfo(r.id,"grade",e.target.value)} className="w-14 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="3年"/></td>
+                  <td className="px-4 py-3"><input value={info.classname||""} onChange={e=>updateStudentInfo(r.id,"classname",e.target.value)} className="w-16 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="A組"/></td>
+                  <td className="px-4 py-3"><input type="number" value={info.number||""} onChange={e=>updateStudentInfo(r.id,"number",e.target.value)} className="w-14 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1.5 text-xs font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="1"/></td>
+                  <td className="px-4 py-3 font-bold text-slate-800 text-sm whitespace-nowrap">{r.student_name}</td>
+                  <td className="px-4 py-3"><span className="text-2xl font-black text-slate-900">{r.total_score}</span><span className="text-slate-400 text-sm font-bold">/{maxTotal}</span></td>
+                  <td className="px-4 py-3">{r.manually_adjusted&&<span className="text-[10px] font-black bg-amber-100 text-amber-700 px-2 py-1 rounded-lg">修正済み</span>}</td>
+                  <td className="px-4 py-3"><button onClick={()=>{setSelected(r);setEditScore(r.total_score);}} className="px-4 py-1.5 bg-slate-900 text-white rounded-lg text-[10px] font-black hover:bg-blue-600 transition-all whitespace-nowrap">詳細・修正</button></td>
+                </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
         </div>
       )}
       {selected&&(
