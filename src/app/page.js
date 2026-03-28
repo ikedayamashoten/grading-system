@@ -205,9 +205,34 @@ function Sidebar({tab,setTab,school}){
 }
 
 function Dashboard({tests,tab,onNew,onSelect,onDelete}){
-  const[search,setSearch]=useState("");const[filter,setFilter]=useState("all");
+  const[search,setSearch]=useState("");
+  const[filterStatus,setFilterStatus]=useState("all");
+  const[filterSubject,setFilterSubject]=useState("all");
+  const[filterClass,setFilterClass]=useState("all");
+  const[sortBy,setSortBy]=useState("date");
+
   const stats=useMemo(()=>({total:tests.length,done:tests.filter(t=>t.status==="採点完了").length,inProgress:tests.filter(t=>t.status==="採点中").length}),[tests]);
-  const filtered=tests.filter(t=>(filter==="all"||t.status===filter)&&(t.name.toLowerCase().includes(search.toLowerCase())||(t.subject||"").includes(search)));
+
+  // 科目・クラスの選択肢を動的生成
+  const allSubjects=useMemo(()=>[...new Set(tests.map(t=>t.subject).filter(Boolean))],[tests]);
+  const allClasses=useMemo(()=>[...new Set(tests.flatMap(t=>t.classes||[]).filter(Boolean))],[tests]);
+
+  const filtered=useMemo(()=>{
+    let arr=tests.filter(t=>{
+      const matchSearch=t.name.toLowerCase().includes(search.toLowerCase())||(t.subject||"").includes(search);
+      const matchStatus=filterStatus==="all"||t.status===filterStatus;
+      const matchSubject=filterSubject==="all"||t.subject===filterSubject;
+      const matchClass=filterClass==="all"||(t.classes||[]).includes(filterClass);
+      return matchSearch&&matchStatus&&matchSubject&&matchClass;
+    });
+    if(sortBy==="name") arr=[...arr].sort((a,b)=>a.name.localeCompare(b.name,"ja"));
+    else if(sortBy==="subject") arr=[...arr].sort((a,b)=>(a.subject||"").localeCompare(b.subject||"","ja"));
+    else if(sortBy==="class") arr=[...arr].sort((a,b)=>(a.classes?.[0]||"").localeCompare(b.classes?.[0]||"","ja"));
+    else if(sortBy==="status") arr=[...arr].sort((a,b)=>a.status.localeCompare(b.status,"ja"));
+    else arr=[...arr].sort((a,b)=>b.date?.localeCompare(a.date||""));
+    return arr;
+  },[tests,search,filterStatus,filterSubject,filterClass,sortBy]);
+
   if(tab==="analytics") return <AnalyticsPage tests={tests}/>;
   return(
     <div className="space-y-6">
@@ -215,25 +240,64 @@ function Dashboard({tests,tab,onNew,onSelect,onDelete}){
         <div><h2 className="text-2xl font-black text-slate-800">ダッシュボード</h2><p className="text-slate-400 text-sm mt-1">テストの管理とAI採点の進捗確認</p></div>
         <button onClick={onNew} className="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-xl font-black text-sm shadow-lg flex items-center gap-2 transition-all active:scale-95">＋ 新規テスト作成</button>
       </div>
+
+      {/* サマリー */}
       <div className="grid grid-cols-3 gap-4">
         {[{label:"総テスト数",value:stats.total},{label:"採点完了",value:stats.done},{label:"採点中",value:stats.inProgress}].map(s=>(<div key={s.label} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100"><p className="text-3xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}
       </div>
+
       <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
-        <div className="p-4 border-b border-slate-50 flex gap-3 items-center justify-between bg-slate-50/50 flex-wrap">
-          <h3 className="font-black text-slate-700 text-sm">テスト一覧</h3>
-          <div className="flex gap-2">
-            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="テスト名で検索..." className="pl-4 pr-4 py-2 bg-white border border-slate-100 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-400 w-44"/>
-            <select value={filter} onChange={e=>setFilter(e.target.value)} className="bg-white border border-slate-100 rounded-xl px-3 py-2 text-sm font-bold outline-none"><option value="all">すべて</option><option value="未着手">未着手</option><option value="採点中">採点中</option><option value="採点完了">採点完了</option></select>
+        {/* フィルターバー */}
+        <div className="p-4 border-b border-slate-100 bg-slate-50/50 space-y-3">
+          <div className="flex gap-2 flex-wrap items-center justify-between">
+            <h3 className="font-black text-slate-700 text-sm">テスト一覧 <span className="text-slate-400 font-bold">({filtered.length}件)</span></h3>
+            <button onClick={()=>setScreen("create")} className="hidden"/>
+          </div>
+          <div className="flex gap-2 flex-wrap">
+            {/* 検索 */}
+            <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="テスト名で検索..." className="pl-4 pr-4 py-2 bg-white border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-blue-400 w-44"/>
+            {/* 科目フィルター */}
+            <select value={filterSubject} onChange={e=>setFilterSubject(e.target.value)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="all">すべての教科</option>
+              {allSubjects.map(s=><option key={s} value={s}>{s}</option>)}
+            </select>
+            {/* クラスフィルター */}
+            <select value={filterClass} onChange={e=>setFilterClass(e.target.value)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="all">すべてのクラス</option>
+              {allClasses.map(c=><option key={c} value={c}>{c}</option>)}
+            </select>
+            {/* ステータスフィルター */}
+            <select value={filterStatus} onChange={e=>setFilterStatus(e.target.value)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="all">すべての状態</option>
+              <option value="未着手">未着手</option>
+              <option value="採点中">採点中</option>
+              <option value="採点完了">採点完了</option>
+            </select>
+            {/* ソート */}
+            <select value={sortBy} onChange={e=>setSortBy(e.target.value)} className="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400">
+              <option value="date">日付順</option>
+              <option value="class">クラス順</option>
+              <option value="subject">教科順</option>
+              <option value="name">テスト名順</option>
+              <option value="status">ステータス順</option>
+            </select>
+            {/* リセット */}
+            {(filterSubject!=="all"||filterClass!=="all"||filterStatus!=="all"||search)&&(
+              <button onClick={()=>{setSearch("");setFilterSubject("all");setFilterClass("all");setFilterStatus("all");}} className="px-3 py-2 bg-red-50 text-red-500 border border-red-200 rounded-xl text-xs font-black hover:bg-red-100 transition-all">✕ リセット</button>
+            )}
           </div>
         </div>
-        {filtered.length===0?<div className="py-20 text-center text-slate-300 font-black text-sm">テストがありません</div>:(
+
+        {/* テーブル */}
+        {filtered.length===0?<div className="py-20 text-center text-slate-300 font-black text-sm">条件に合うテストがありません</div>:(
           <table className="w-full">
-            <thead><tr className="text-left border-b border-slate-50">{["テスト名","教科","ステータス","実施日",""].map(h=><th key={h} className="px-5 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
+            <thead><tr className="text-left border-b border-slate-50">{["テスト名","教科","クラス","ステータス","実施日",""].map(h=><th key={h} className="px-5 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
             <tbody className="divide-y divide-slate-50">
               {filtered.map(t=>(
                 <tr key={t.id} className="hover:bg-slate-50/80 cursor-pointer group transition-all" onClick={()=>onSelect(t)}>
                   <td className="px-5 py-4 font-bold text-slate-800 text-sm">{t.name}</td>
                   <td className="px-5 py-4"><span className={`text-[10px] font-black px-2.5 py-1 rounded-lg border ${SUBJECT_COLORS[t.subject]||"bg-slate-100 text-slate-500 border-slate-200"}`}>{t.subject}</span></td>
+                  <td className="px-5 py-4 text-xs text-slate-500 font-bold">{(t.classes||[]).join(", ")}</td>
                   <td className="px-5 py-4"><span className={`flex items-center gap-1.5 text-[10px] font-black px-2.5 py-1 rounded-lg w-fit ${STATUS_CONFIG[t.status]?.color}`}><span className={`w-1.5 h-1.5 rounded-full ${STATUS_CONFIG[t.status]?.dot}`}/>{t.status}</span></td>
                   <td className="px-5 py-4 text-xs text-slate-400 font-bold">{t.date}</td>
                   <td className="px-5 py-4 text-right" onClick={e=>e.stopPropagation()}><button onClick={()=>{if(window.confirm("削除しますか？"))onDelete(t.id);}} className="p-2 text-slate-200 hover:text-red-500 transition-colors rounded-lg hover:bg-red-50">🗑</button></td>
