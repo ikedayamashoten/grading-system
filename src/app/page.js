@@ -30,20 +30,26 @@ const deleteTemplate = async (id) => {
 // =============================================
 // Gemini: 画像1枚 → 1生徒採点
 // =============================================
-async function callGemini(imageBase64, mimeType, sections, apiKey) {
-  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
-  const gradingContext = sections.map((s) =>
-    `【${s.title}】\n` + s.questions.map((q, qi) => {
-      const typeLabel = q.type === "choice" ? "選択肢問題" : q.type === "word" ? "単語・記号（完全一致）" : "記述式";
-      return `設問${qi+1}(${typeLabel}): ${q.q}\n正解/模範解答: ${q.ans}\n採点基準: ${q.criteria}\n配点: ${q.pts}点`;
-    }).join("\n")
-  ).join("\n\n");
-  const prompt = `あなたは採点の専門家です。答案画像を読み取り採点してください。単語・記号問題は完全一致のみ正解です。\n【採点基準】\n${gradingContext}\n\n必ず以下のJSONのみ返してください。他のテキストは一切含めないでください。\n{"student_name":"氏名","results":[{"section":"大問名","q_idx":0,"score":点数,"max_score":満点,"feedback":"根拠"}],"total_score":合計点,"overall_comment":"総合コメント"}`;
-  const payload = { contents: [{ parts: [{ text: prompt }, { inlineData: { mimeType: mimeType || "image/jpeg", data: imageBase64 } }] }] };
-  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
-  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
+const EDGE_URL = "https://tcatrrncukiipogccdnc.supabase.co/functions/v1/gemini-grade";
+
+async function callEdge(payload) {
+  const res = await fetch(EDGE_URL, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYXRycm5jdWtpaXBvZ2NjZG5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNzA5ODcsImV4cCI6MjA4OTc0Njk4N30.pbcdWibNAI4r9UmJ4bsale_Lc11HusUH-cSoeAobfZQ`,
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.error || "Edge Functionエラー"); }
   const data = await res.json();
-  const text = data.candidates[0].content.parts[0].text;
+  if (data.error) throw new Error(data.error);
+  return data.text;
+}
+
+function extractJson(text) {
+  const arrMatch = text.match(/\[[\s\S]*\]/);
+  if (arrMatch) { try { return JSON.parse(arrMatch[0]); } catch(e) {} }
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSONの取得に失敗しました");
   let depth = 0, end = 0;
@@ -52,6 +58,22 @@ async function callGemini(imageBase64, mimeType, sections, apiKey) {
     else if (text[i] === '}') { depth--; if (depth === 0) { end = i; break; } }
   }
   return JSON.parse(text.slice(text.indexOf('{'), end + 1));
+}
+
+async function callGemini(imageBase64, mimeType, sections) {
+  const text = await callEdge({ mode: "grade", imageBase64, mimeType, sections });
+  return extractJson(text);
+}
+
+async function callGeminiPdf(pdfBase64, sections) {
+  const text = await callEdge({ mode: "grade-pdf", imageBase64: pdfBase64, sections });
+  const result = extractJson(text);
+  return Array.isArray(result) ? result : [result];
+}
+
+async function callGeminiExtract(pdfBase64, mimeType) {
+  const text = await callEdge({ mode: "extract", imageBase64: pdfBase64, mimeType });
+  return extractJson(text);
 }
 
 // =============================================
@@ -153,7 +175,7 @@ export default function App() {
   },[school]);
 
   const handleLogin=async(code,password)=>{
-    const{data,error}=await supabase.from("schools").select("*").eq("code",code).eq("password_hash",password);
+    const{data,error}=await supabase.rpc("verify_school_login",{p_code:code,p_password:password});
     if(error||!data?.length){ notify("IDまたはパスワードが違います","error"); return; }
     setSchool(data[0]); setScreen("main"); setTab("dashboard");
   };
@@ -348,7 +370,7 @@ function CreateTest({subjects,classes,geminiKey,school,onSave,onCancel,notify}){
     setExtracting(true); notify("PDFを解析中...");
     try{
       const b64=await fileToBase64(file);
-      const result=await callGeminiExtract(b64,file.type,geminiKey);
+      const result=await callGeminiExtract(b64,file.type);
       if(result.sections&&result.sections.length>0){
         setSections(result.sections.map(s=>({id:genId(),title:s.title||"大問1",questions:(s.questions||[]).map(q=>({id:genId(),type:q.type||"essay",q:q.q||"",ans:q.ans||"",criteria:q.criteria||"",pts:q.pts||10,choices:q.choices||["","","",""]}))})));
         notify(`✅ ${result.sections.length}大問・${result.sections.reduce((s,sec)=>s+(sec.questions||[]).length,0)}問を自動生成しました`);
@@ -523,14 +545,14 @@ function UploadScreen({test,geminiKey,onComplete,onBack,notify}){
       try{
         const b64=await fileToBase64(file);
         if(file.type==="application/pdf"){
-          const result=await callGeminiPdf(b64,test.sections,key);
+          const result=await callGeminiPdf(b64,test.sections);
           if(Array.isArray(result)){
             result.forEach((r,idx)=>all.push({...r,fileName:`${file.name} (${idx+1}人目)`}));
           } else {
             all.push({...result,fileName:file.name});
           }
         } else {
-          const result=await callGemini(b64,file.type,test.sections,key);
+          const result=await callGemini(b64,file.type,test.sections);
           all.push({...result,fileName:file.name});
         }
       }catch(err){
