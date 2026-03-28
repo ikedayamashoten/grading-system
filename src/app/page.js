@@ -3,27 +3,7 @@ import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
 
 // PDF→画像変換（1ページ=1生徒）
-async function pdfToImages(file) {
-  const arrayBuffer = await file.arrayBuffer();
-  const pdfjsLib = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/legacy/build/pdf.worker.mjs",
-    import.meta.url
-  ).toString();
-  const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
-  const images = [];
-  for (let i = 1; i <= pdf.numPages; i++) {
-    const page = await pdf.getPage(i);
-    const viewport = page.getViewport({ scale: 2.0 });
-    const canvas = document.createElement("canvas");
-    canvas.width = viewport.width;
-    canvas.height = viewport.height;
-    const ctx = canvas.getContext("2d");
-    await page.render({ canvasContext: ctx, viewport }).promise;
-    images.push(canvas.toDataURL("image/jpeg", 0.9).split(",")[1]);
-  }
-  return images;
-}
+
 // テンプレート操作
 const fetchTemplates = async (schoolId) => {
   const { data, error } = await supabase.from("test_templates").select("*").eq("school_id", schoolId).order("created_at", { ascending: false });
@@ -592,28 +572,58 @@ function UploadScreen({test,geminiKey,onComplete,onBack,notify}){
     if(!key){ notify("Gemini APIキーを入力してください","error"); return; }
     if(!files.length){ notify("答案ファイルをアップロードしてください","error"); return; }
     if(!test?.sections?.length){ notify("採点基準が設定されていません","error"); return; }
-   setRunning(true);const all=[];
-    // PDFの場合はページ分割して1ページ=1生徒として処理
-    const tasks=[];
-    for(const file of files){
-      if(file.type==="application/pdf"){
-        try{
-          const pages=await pdfToImages(file);
-          pages.forEach((b64,idx)=>tasks.push({b64,mimeType:"image/jpeg",name:`${file.name} (${idx+1}ページ目)`}));
-        }catch(err){ tasks.push({error:true,name:file.name,msg:err.message}); }
-      } else {
-        const b64=await fileToBase64(file);
-        tasks.push({b64,mimeType:file.type,name:file.name});
+  setRunning(true); const all = [];
+    for (let i = 0; i < files.length; i++) {
+      const file = files[i];
+      setProgress({ cur: i + 1, total: files.length, status: `${file.name} を採点中...` });
+      try {
+        const b64 = await fileToBase64(file);
+        if (file.type === "application/pdf") {
+          // PDFを直接Geminiに送り「全生徒分をまとめて採点」させる
+          const result = await callGeminiPdf(b64, test.sections, key);
+          // PDF全ページ一括採点（1ページ=1生徒）
+async function callGeminiPdf(pdfBase64, sections, apiKey) {
+  const url = `https://generativelanguage.googleapis.com/v1/models/gemini-2.5-flash:generateContent?key=${apiKey}`;
+  const gradingContext = sections.map((s) =>
+    `【${s.title}】\n` + s.questions.map((q, qi) => {
+      const typeLabel = q.type === "choice" ? "選択肢問題" : q.type === "word" ? "単語・記号（完全一致）" : "記述式";
+      return `設問${qi+1}(${typeLabel}): ${q.q}\n正解/模範解答: ${q.ans}\n採点基準: ${q.criteria}\n配点: ${q.pts}点`;
+    }).join("\n")
+  ).join("\n\n");
+  const prompt = `このPDFには複数の生徒の答案が含まれています（1ページ=1生徒）。全生徒分を採点してください。\n【採点基準】\n${gradingContext}\n\n必ず以下のJSON配列のみ返してください。\n[{"student_name":"氏名","results":[{"section":"大問名","q_idx":0,"score":点数,"max_score":満点,"feedback":"根拠"}],"total_score":合計点,"overall_comment":"総合コメント"}]`;
+  const payload = {
+    contents: [{ parts: [
+      { text: prompt },
+      { inlineData: { mimeType: "application/pdf", data: pdfBase64 } }
+    ]}]
+  };
+  const res = await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+  if (!res.ok) { const e = await res.json(); throw new Error(e.error?.message || "Gemini APIエラー"); }
+  const data = await res.json();
+  const text = data.candidates[0].content.parts[0].text;
+  const arrMatch = text.match(/\[[\s\S]*\]/);
+  if (arrMatch) {
+    try { return JSON.parse(arrMatch[0]); } catch(e) {}
+  }
+  const objMatch = text.match(/\{[\s\S]*\}/);
+  if (!objMatch) throw new Error("JSONの取得に失敗しました");
+  return JSON.parse(objMatch[0]);
+}
+          // 複数生徒の結果が配列で返ってくる
+          if (Array.isArray(result)) {
+            result.forEach((r, idx) => all.push({ ...r, fileName: `${file.name} (${idx + 1}人目)` }));
+          } else {
+            all.push({ ...result, fileName: file.name });
+          }
+        } else {
+          const result = await callGemini(b64, file.type, test.sections, key);
+          all.push({ ...result, fileName: file.name });
+        }
+      } catch (err) {
+        all.push({ student_name: `エラー(${file.name})`, results: [], total_score: 0, overall_comment: err.message, fileName: file.name, error: true });
       }
     }
-    for(let i=0;i<tasks.length;i++){
-      const task=tasks[i];
-      setProgress({cur:i+1,total:tasks.length,status:`${task.name} を採点中...`});
-      if(task.error){ all.push({student_name:`エラー(${task.name})`,results:[],total_score:0,overall_comment:task.msg,fileName:task.name,error:true}); continue; }
-      try{ const result=await callGemini(task.b64,task.mimeType,test.sections,key); all.push({...result,fileName:task.name}); }
-      catch(err){ all.push({student_name:`エラー(${task.name})`,results:[],total_score:0,overall_comment:err.message,fileName:task.name,error:true}); }
-    }
-    setResults(all);setRunning(false);
+    setResults(all); setRunning(false);
   };
   if(running||results.length>0) return(
     <div className="space-y-6">
