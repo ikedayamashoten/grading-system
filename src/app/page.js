@@ -637,38 +637,210 @@ function ResultScreen({testId,testMeta,notify,onBack}){
 }
 
 function AnalyticsPage({tests}){
+  const[selectedTestId,setSelectedTestId]=useState("");
+  const[results,setResults]=useState([]);
+  const[loading,setLoading]=useState(false);
   const done=tests.filter(t=>t.status==="採点完了");
+
+  useEffect(()=>{
+    if(!selectedTestId) return;
+    setLoading(true);
+    supabase.from("grading_results").select("*").eq("test_id",selectedTestId)
+      .then(({data})=>setResults(data||[]))
+      .finally(()=>setLoading(false));
+  },[selectedTestId]);
+
+  const selectedTest=tests.find(t=>t.id===selectedTestId);
+  const scores=results.map(r=>r.total_score||0);
+  const avg=scores.length>0?Math.round(scores.reduce((a,b)=>a+b,0)/scores.length):0;
+  const max=scores.length>0?Math.max(...scores):0;
+  const min=scores.length>0?Math.min(...scores):0;
+  const maxTotal=useMemo(()=>{
+    if(!selectedTest?.sections) return 100;
+    return selectedTest.sections.reduce((s,sec)=>s+sec.questions.reduce((ss,q)=>ss+Number(q.pts||0),0),0);
+  },[selectedTest]);
+
+  const distribution=useMemo(()=>{
+    if(!scores.length||!maxTotal) return [];
+    const buckets=[];
+    const step=10;
+    for(let i=0;i<=maxTotal;i+=step){
+      const count=scores.filter(s=>s>=i&&s<i+step).length;
+      buckets.push({label:`${i}〜${Math.min(i+step-1,maxTotal)}`,count,from:i});
+    }
+    return buckets;
+  },[scores,maxTotal]);
+
+  const questionStats=useMemo(()=>{
+    if(!selectedTest?.sections||!results.length) return [];
+    const stats=[];
+    selectedTest.sections.forEach(sec=>{
+      sec.questions.forEach((q,qi)=>{
+        const qResults=results.map(r=>(r.results||[]).find(res=>res.section===sec.title&&res.q_idx===qi)).filter(Boolean);
+        const avgScore=qResults.length>0?Math.round(qResults.reduce((s,r)=>s+(r.score||0),0)/qResults.length*10)/10:0;
+        const rate=q.pts>0?Math.round(avgScore/q.pts*100):0;
+        stats.push({label:`${sec.title}-設問${qi+1}`,avgScore,maxScore:q.pts,rate,type:q.type});
+      });
+    });
+    return stats;
+  },[selectedTest,results]);
+
   return(
     <div className="space-y-6">
       <h2 className="text-2xl font-black text-slate-800">分析レポート</h2>
-      <div className="grid grid-cols-3 gap-4">{[{label:"完了テスト数",value:done.length},{label:"総テスト数",value:tests.length},{label:"完了率",value:tests.length>0?Math.round(done.length/tests.length*100)+"%":"-"}].map(s=>(<div key={s.label} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100"><p className="text-3xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}</div>
-      {done.length===0?<div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100"><p className="text-slate-300 font-black">採点完了のテストがありません</p></div>:done.map(t=>(<div key={t.id} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100"><div className="flex justify-between items-center"><div><p className="font-black text-slate-800">{t.name}</p><p className="text-xs text-slate-400 font-bold mt-0.5">{t.subject} · {t.date}</p></div><span className="text-[10px] font-black px-2 py-1 rounded-lg bg-emerald-100 text-emerald-700">採点完了</span></div></div>))}
-    </div>
-  );
-}
 
-function SettingsPage({classes,subjects,onSave,notify}){
-  const[newCls,setNewCls]=useState("");const[newSub,setNewSub]=useState("");const[saving,setSaving]=useState(false);
-  const save=async(c,s)=>{setSaving(true);await onSave(c,s);setSaving(false);};
-  return(
-    <div className="space-y-8">
-      <h2 className="text-2xl font-black text-slate-800">設定</h2>
-      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6">
-        <p className="font-black text-emerald-800">🔒 セキュリティ設定済み</p>
-        <p className="text-emerald-700 text-sm mt-1">Gemini APIキーはSupabase Edge Functionsに安全に隔離されています。パスワードはbcryptでハッシュ化されています。</p>
+      <div className="grid grid-cols-3 gap-4">
+        {[{label:"完了テスト数",value:done.length+"件"},{label:"総テスト数",value:tests.length+"件"},{label:"完了率",value:tests.length>0?Math.round(done.length/tests.length*100)+"%":"-"}].map(s=>(<div key={s.label} className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100"><p className="text-3xl font-black text-slate-800">{s.value}</p><p className="text-xs text-slate-400 font-bold mt-1">{s.label}</p></div>))}
       </div>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
-          <h3 className="font-black text-slate-800">📚 教科・科目設定</h3>
-          <div className="flex gap-2"><input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newSub){save(classes,[...subjects,newSub]);setNewSub("");}}} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 英語演習"/><button disabled={saving} onClick={()=>{if(newSub){save(classes,[...subjects,newSub]);setNewSub("");}}} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
-          <div className="space-y-2 max-h-56 overflow-y-auto">{subjects.map(s=>(<div key={s} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{s}</span><button disabled={saving} onClick={()=>save(classes,subjects.filter(i=>i!==s))} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
-        </div>
-        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
-          <h3 className="font-black text-slate-800">🏫 クラス設定</h3>
-          <div className="flex gap-2"><input value={newCls} onChange={e=>setNewCls(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newCls){save([...classes,newCls],subjects);setNewCls("");}}} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 2年C組"/><button disabled={saving} onClick={()=>{if(newCls){save([...classes,newCls],subjects);setNewCls("");}}} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
-          <div className="space-y-2 max-h-56 overflow-y-auto">{classes.map(c=>(<div key={c} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{c}</span><button disabled={saving} onClick={()=>save(classes.filter(i=>i!==c),subjects)} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
-        </div>
+
+      <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+        <label className="text-[10px] font-black text-slate-400 uppercase tracking-widest block mb-3">分析するテストを選択</label>
+        <select value={selectedTestId} onChange={e=>setSelectedTestId(e.target.value)} className="w-full bg-slate-50 border border-slate-200 rounded-xl p-3 font-bold outline-none focus:ring-2 focus:ring-blue-400">
+          <option value="">テストを選んでください...</option>
+          {done.map(t=><option key={t.id} value={t.id}>{t.name}（{t.subject} · {t.date}）</option>)}
+        </select>
       </div>
+
+      {selectedTestId&&(
+        loading
+          ?<div className="flex justify-center py-20"><div className="animate-spin w-8 h-8 border-4 border-blue-600 border-t-transparent rounded-full"/></div>
+          :results.length===0
+            ?<div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100"><p className="text-slate-300 font-black">採点データがありません</p></div>
+            :<div className="space-y-6">
+
+              {/* 基本統計 */}
+              <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+                {[
+                  {label:"採点人数",value:results.length+"名",color:"text-blue-600",bg:"bg-blue-50"},
+                  {label:"クラス平均",value:avg+"点",color:"text-emerald-600",bg:"bg-emerald-50"},
+                  {label:"最高点",value:max+"点",color:"text-purple-600",bg:"bg-purple-50"},
+                  {label:"最低点",value:min+"点",color:"text-rose-600",bg:"bg-rose-50"},
+                ].map(s=>(<div key={s.label} className={`${s.bg} rounded-2xl p-5 border border-slate-100`}><p className={`text-3xl font-black ${s.color}`}>{s.value}</p><p className="text-xs text-slate-500 font-bold mt-1">{s.label}</p></div>))}
+              </div>
+
+              {/* 得点分布グラフ */}
+              <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="font-black text-slate-800">📊 得点分布</h3>
+                  <div className="flex gap-4 text-xs font-bold text-slate-400">
+                    <span>平均 <span className="text-emerald-600 font-black">{avg}点</span></span>
+                    <span>満点 <span className="text-slate-600 font-black">{maxTotal}点</span></span>
+                    <span>正答率 <span className="text-blue-600 font-black">{maxTotal>0?Math.round(avg/maxTotal*100):0}%</span></span>
+                  </div>
+                </div>
+                <div className="flex items-end gap-1.5 h-40 mb-2">
+                  {distribution.map((b,i)=>{
+                    const maxCount=Math.max(...distribution.map(d=>d.count),1);
+                    const height=b.count>0?Math.max((b.count/maxCount)*100,6):2;
+                    const isAvgBucket=avg>=b.from&&avg<b.from+10;
+                    return(
+                      <div key={i} className="flex-1 flex flex-col items-center gap-1">
+                        {b.count>0&&<span className="text-[10px] font-black text-slate-600">{b.count}人</span>}
+                        <div className="w-full rounded-t-lg transition-all" style={{
+                          height:`${height}%`,
+                          backgroundColor:isAvgBucket?"#10b981":b.count>0?"#3b82f6":"#e2e8f0"
+                        }}/>
+                      </div>
+                    );
+                  })}
+                </div>
+                <div className="flex gap-1.5 mt-1">
+                  {distribution.map((b,i)=>(
+                    <div key={i} className="flex-1 text-center">
+                      <span className="text-[8px] text-slate-400 font-bold">{b.from}</span>
+                    </div>
+                  ))}
+                </div>
+                <div className="flex items-center gap-4 mt-4 text-[10px] font-bold">
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded inline-block"/>平均点帯</span>
+                  <span className="flex items-center gap-1"><span className="w-3 h-3 bg-blue-500 rounded inline-block"/>その他</span>
+                </div>
+              </div>
+
+              {/* 設問ごとの正答率 */}
+              {questionStats.length>0&&(
+                <div className="bg-white rounded-2xl p-6 shadow-sm border border-slate-100">
+                  <h3 className="font-black text-slate-800 mb-5">📝 設問ごとの平均得点・正答率</h3>
+                  <div className="space-y-4">
+                    {questionStats.map((q,i)=>(
+                      <div key={i} className="space-y-1.5">
+                        <div className="flex justify-between items-center">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs font-bold text-slate-700">{q.label}</span>
+                            <span className={`text-[10px] font-black px-1.5 py-0.5 rounded-md ${q.type==="word"?"bg-emerald-100 text-emerald-700":q.type==="choice"?"bg-purple-100 text-purple-700":"bg-blue-100 text-blue-700"}`}>
+                              {q.type==="word"?"単語":q.type==="choice"?"選択肢":"記述"}
+                            </span>
+                          </div>
+                          <div className="flex items-center gap-3 text-xs font-bold">
+                            <span className="text-slate-400">平均 {q.avgScore}/{q.maxScore}点</span>
+                            <span className={`font-black text-sm ${q.rate>=80?"text-emerald-600":q.rate>=60?"text-amber-600":"text-red-500"}`}>{q.rate}%</span>
+                          </div>
+                        </div>
+                        <div className="w-full bg-slate-100 rounded-full h-3 overflow-hidden">
+                          <div className="h-full rounded-full transition-all duration-700" style={{
+                            width:`${q.rate}%`,
+                            backgroundColor:q.rate>=80?"#10b981":q.rate>=60?"#f59e0b":"#ef4444"
+                          }}/>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="mt-5 flex gap-4 text-[10px] font-bold text-slate-400">
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded-full inline-block"/>80%以上（良好）</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-500 rounded-full inline-block"/>60〜79%（普通）</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded-full inline-block"/>60%未満（要指導）</span>
+                  </div>
+                </div>
+              )}
+
+              {/* 採点者一覧 */}
+              <div className="bg-white rounded-2xl shadow-sm border border-slate-100 overflow-hidden">
+                <div className="px-6 py-4 border-b border-slate-100 bg-slate-50/50">
+                  <h3 className="font-black text-slate-800 text-sm">👥 生徒別得点一覧</h3>
+                </div>
+                <table className="w-full">
+                  <thead><tr className="text-left border-b border-slate-50">{["順位","氏名","得点","平均との差","評価"].map(h=><th key={h} className="px-5 py-3 text-[10px] font-black text-slate-400 uppercase tracking-wider">{h}</th>)}</tr></thead>
+                  <tbody className="divide-y divide-slate-50">
+                    {[...results].sort((a,b)=>(b.total_score||0)-(a.total_score||0)).map((r,i)=>{
+                      const diff=(r.total_score||0)-avg;
+                      return(
+                        <tr key={r.id} className="hover:bg-slate-50/80 transition-all">
+                          <td className="px-5 py-3 font-black text-slate-400 text-sm">{i+1}位</td>
+                          <td className="px-5 py-3 font-bold text-slate-800">{r.student_name}</td>
+                          <td className="px-5 py-3"><span className="text-xl font-black text-slate-900">{r.total_score}</span><span className="text-slate-400 text-xs font-bold">/{maxTotal}</span></td>
+                          <td className="px-5 py-3"><span className={`text-sm font-black ${diff>0?"text-emerald-600":diff<0?"text-red-500":"text-slate-400"}`}>{diff>0?"+":""}{diff}点</span></td>
+                          <td className="px-5 py-3">
+                            <span className={`text-[10px] font-black px-2 py-1 rounded-lg ${
+                              (r.total_score||0)/maxTotal>=0.8?"bg-emerald-100 text-emerald-700":
+                              (r.total_score||0)/maxTotal>=0.6?"bg-amber-100 text-amber-700":
+                              "bg-red-100 text-red-700"
+                            }`}>
+                              {(r.total_score||0)/maxTotal>=0.8?"優秀":(r.total_score||0)/maxTotal>=0.6?"良好":"要支援"}
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+      )}
+
+      {!selectedTestId&&done.length>0&&(
+        <div className="space-y-3">
+          <h3 className="font-black text-slate-700 text-sm">採点完了テスト一覧</h3>
+          {done.map(t=>(<div key={t.id} onClick={()=>setSelectedTestId(t.id)} className="bg-white rounded-2xl p-5 shadow-sm border border-slate-100 cursor-pointer hover:border-blue-300 hover:shadow-md transition-all group"><div className="flex justify-between items-center"><div><p className="font-black text-slate-800">{t.name}</p><p className="text-xs text-slate-400 font-bold mt-0.5">{t.subject} · {(t.classes||[]).join(", ")} · {t.date}</p></div><span className="text-blue-500 text-xs font-black group-hover:underline">分析する →</span></div></div>))}
+        </div>
+      )}
+
+      {!selectedTestId&&done.length===0&&(
+        <div className="bg-white rounded-2xl p-20 text-center shadow-sm border border-slate-100">
+          <p className="text-slate-300 font-black text-lg mb-2">📊</p>
+          <p className="text-slate-300 font-black">採点完了のテストがありません</p>
+          <p className="text-slate-300 text-sm mt-1">テストを採点すると分析データが表示されます</p>
+        </div>
+      )}
     </div>
   );
 }
