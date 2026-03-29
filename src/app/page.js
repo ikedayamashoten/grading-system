@@ -72,7 +72,7 @@ async function callEdge(payload) {
 }
 
 function extractJson(text) {
-  const arrMatch = text.match(/\[\s\S]*\]/);
+  const arrMatch = text.match(/\[[\s\S]*\]/);
   if (arrMatch) { try { return JSON.parse(arrMatch[0]); } catch(e) {} }
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSONの取得に失敗しました");
