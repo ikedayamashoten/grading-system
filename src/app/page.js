@@ -72,16 +72,36 @@ async function callEdge(payload) {
 }
 
 function extractJson(text) {
+  // 制御文字を除去してからパース
+  const clean = (str) => str.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
+  
+  // 配列形式を試みる
   const arrMatch = text.match(/\[[\s\S]*\]/);
-  if (arrMatch) { try { return JSON.parse(arrMatch[0]); } catch(e) {} }
+  if (arrMatch) {
+    try { return JSON.parse(clean(arrMatch[0])); } catch(e) {}
+  }
+  
+  // オブジェクト形式を試みる
   const match = text.match(/\{[\s\S]*\}/);
   if (!match) throw new Error("JSONの取得に失敗しました");
+  
+  // 最初の完結したJSONオブジェクトを抽出
   let depth = 0, end = 0;
-  for (let i = text.indexOf("{"); i < text.length; i++) {
+  const start = text.indexOf("{");
+  for (let i = start; i < text.length; i++) {
     if (text[i] === "{") depth++;
     else if (text[i] === "}") { depth--; if (depth === 0) { end = i; break; } }
   }
-  return JSON.parse(text.slice(text.indexOf("{"), end + 1));
+  const jsonStr = clean(text.slice(start, end + 1));
+  try {
+    return JSON.parse(jsonStr);
+  } catch(e) {
+    // 最終手段：不正な改行をエスケープして再試行
+    const escaped = jsonStr.replace(/:\s*"((?:[^"\\]|\\.)*)"/gs, (m, v) => {
+      return ': "' + v.replace(/\n/g, "\\n").replace(/\r/g, "\\r").replace(/\t/g, "\\t") + '"';
+    });
+    return JSON.parse(escaped);
+  }
 }
 
 async function callGemini(imageBase64, mimeType, sections) {
