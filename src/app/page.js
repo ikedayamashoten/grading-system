@@ -1,7 +1,42 @@
 "use client";
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { createClient } from "@supabase/supabase-js";
-
+// PDFを1ページずつ画像に変換（CDN版pdf.js使用）
+async function pdfToImages(file) {
+  return new Promise(async (resolve, reject) => {
+    try {
+      const arrayBuffer = await file.arrayBuffer();
+      const script = document.createElement("script");
+      script.src = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js";
+      script.onload = async () => {
+        try {
+          const pdfjsLib = window["pdfjs-dist/build/pdf"];
+          pdfjsLib.GlobalWorkerOptions.workerSrc = "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+          const pdf = await pdfjsLib.getDocument({ data: new Uint8Array(arrayBuffer) }).promise;
+          const images = [];
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const viewport = page.getViewport({ scale: 1.5 });
+            const canvas = document.createElement("canvas");
+            canvas.width = viewport.width;
+            canvas.height = viewport.height;
+            const ctx = canvas.getContext("2d");
+            await page.render({ canvasContext: ctx, viewport }).promise;
+            images.push(canvas.toDataURL("image/jpeg", 0.85).split(",")[1]);
+          }
+          resolve(images);
+        } catch(e) { reject(e); }
+      };
+      script.onerror = () => reject(new Error("pdf.jsの読み込みに失敗しました"));
+      // すでに読み込み済みの場合
+      if (window["pdfjs-dist/build/pdf"]) {
+        script.onload();
+        return;
+      }
+      document.head.appendChild(script);
+    } catch(e) { reject(e); }
+  });
+}
 const supabase = createClient(
   "https://tcatrrncukiipogccdnc.supabase.co",
   "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InRjYXRycm5jdWtpaXBvZ2NjZG5jIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQxNzA5ODcsImV4cCI6MjA4OTc0Njk4N30.pbcdWibNAI4r9UmJ4bsale_Lc11HusUH-cSoeAobfZQ"
@@ -509,9 +544,21 @@ function UploadScreen({test,onComplete,onBack,notify}){
       try{
         const b64=await fileToBase64(file);
         if(file.type==="application/pdf"){
-          const result=await callGeminiPdf(b64,test.sections);
-          if(Array.isArray(result)){ result.forEach((r,idx)=>all.push({...r,fileName:`${file.name} (${idx+1}人目)`})); }
-          else { all.push({...result,fileName:file.name}); }
+          // PDFを1ページずつ画像に変換して採点
+          try{
+            const pages = await pdfToImages(file);
+            for(let p=0;p<pages.length;p++){
+              setProgress({cur:i+1,total:files.length,status:`${file.name} (${p+1}/${pages.length}ページ) を採点中...`});
+              try{
+                const result=await callGemini(pages[p],"image/jpeg",test.sections);
+                all.push({...result,fileName:`${file.name} (${p+1}ページ目)`});
+              }catch(err){
+                all.push({student_name:`エラー(${file.name} ${p+1}ページ目)`,results:[],total_score:0,overall_comment:err.message,fileName:`${file.name} (${p+1}ページ目)`,error:true});
+              }
+            }
+          }catch(err){
+            all.push({student_name:`エラー(${file.name})`,results:[],total_score:0,overall_comment:err.message,fileName:file.name,error:true});
+          }
         } else {
           const result=await callGemini(b64,file.type,test.sections);
           all.push({...result,fileName:file.name});
