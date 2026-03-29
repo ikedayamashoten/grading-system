@@ -844,3 +844,28 @@ function AnalyticsPage({tests}){
     </div>
   );
 }
+function SettingsPage({classes,subjects,onSave,notify}){
+  const[newCls,setNewCls]=useState("");const[newSub,setNewSub]=useState("");const[saving,setSaving]=useState(false);
+  const save=async(c,s)=>{setSaving(true);await onSave(c,s);setSaving(false);};
+  return(
+    <div className="space-y-8">
+      <h2 className="text-2xl font-black text-slate-800">設定</h2>
+      <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6">
+        <p className="font-black text-emerald-800">🔒 セキュリティ設定済み</p>
+        <p className="text-emerald-700 text-sm mt-1">Gemini APIキーはSupabase Edge Functionsに安全に隔離されています。パスワードはbcryptでハッシュ化されています。</p>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
+          <h3 className="font-black text-slate-800">📚 教科・科目設定</h3>
+          <div className="flex gap-2"><input value={newSub} onChange={e=>setNewSub(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newSub){save(classes,[...subjects,newSub]);setNewSub("");}}} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 英語演習"/><button disabled={saving} onClick={()=>{if(newSub){save(classes,[...subjects,newSub]);setNewSub("");}}} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
+          <div className="space-y-2 max-h-56 overflow-y-auto">{subjects.map(s=>(<div key={s} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{s}</span><button disabled={saving} onClick={()=>save(classes,subjects.filter(i=>i!==s))} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
+        </div>
+        <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
+          <h3 className="font-black text-slate-800">🏫 クラス設定</h3>
+          <div className="flex gap-2"><input value={newCls} onChange={e=>setNewCls(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"&&newCls){save([...classes,newCls],subjects);setNewCls("");}}} className="flex-1 bg-slate-50 border border-slate-100 rounded-xl p-3 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-400" placeholder="例: 2年C組"/><button disabled={saving} onClick={()=>{if(newCls){save([...classes,newCls],subjects);setNewCls("");}}} className="bg-slate-900 text-white px-5 rounded-xl font-black text-sm hover:bg-blue-600 disabled:opacity-60 transition-all">追加</button></div>
+          <div className="space-y-2 max-h-56 overflow-y-auto">{classes.map(c=>(<div key={c} className="flex justify-between items-center p-3 bg-slate-50 rounded-xl border border-slate-100"><span className="font-bold text-sm text-slate-700">{c}</span><button disabled={saving} onClick={()=>save(classes.filter(i=>i!==c),subjects)} className="text-slate-300 hover:text-red-500 transition-colors">🗑</button></div>))}</div>
+        </div>
+      </div>
+    </div>
+  );
+}
