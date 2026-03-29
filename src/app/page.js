@@ -786,9 +786,9 @@ function AnalyticsPage({tests}){
                     ))}
                   </div>
                   <div className="mt-5 flex gap-4 text-[10px] font-bold text-slate-400">
-                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded-full inline-block"/>80%以上（良好）</span>
-                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-500 rounded-full inline-block"/>60〜79%（普通）</span>
-                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded-full inline-block"/>60%未満（要指導）</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-emerald-500 rounded-full inline-block"/>80%以上（A）</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-amber-500 rounded-full inline-block"/>60〜79%（B）</span>
+                    <span className="flex items-center gap-1"><span className="w-3 h-3 bg-red-500 rounded-full inline-block"/>60%未満（C）</span>
                   </div>
                 </div>
               )}
@@ -815,7 +815,7 @@ function AnalyticsPage({tests}){
                               (r.total_score||0)/maxTotal>=0.6?"bg-amber-100 text-amber-700":
                               "bg-red-100 text-red-700"
                             }`}>
-                              {(r.total_score||0)/maxTotal>=0.8?"優秀":(r.total_score||0)/maxTotal>=0.6?"良好":"要支援"}
+                              {(r.total_score||0)/maxTotal>=0.8?"A":(r.total_score||0)/maxTotal>=0.6?"B":"C"}
                             </span>
                           </td>
                         </tr>
