@@ -85,7 +85,8 @@ function extractJson(text) {
     try { return JSON.parse(fixed); } catch(e) {}
     return null;
   };
-  const arrMatch = text.match(/\[[\s\S]*\]/);
+  // 配列マッチはJSON全体が配列の場合のみ（オブジェクト内の配列には反応しない）
+  const arrMatch = text.match(/^\s*\[[\s\S]*\]\s*$/);
   if (arrMatch) { const r = tryParse(arrMatch[0]); if (r) return r; }
   const start = text.indexOf("{");
   if (start === -1) throw new Error("JSONの取得に失敗しました");
