@@ -536,37 +536,51 @@ function UploadScreen({test,onComplete,onBack,notify}){
   const[progress,setProgress]=useState({cur:0,total:0,status:""});const[results,setResults]=useState([]);
   const fileRef=useRef();
   const handleFiles=(e)=>setFiles(prev=>[...prev,...Array.from(e.target.files).filter(f=>f.type.startsWith("image/")||f.type==="application/pdf")]);
+  const retryCallGemini=async(base64,mime,sections,maxRetry=3)=>{
+    for(let attempt=0;attempt<maxRetry;attempt++){
+      try{ return await callGemini(base64,mime,sections); }
+      catch(err){
+        if(attempt===maxRetry-1) throw err;
+        await new Promise(r=>setTimeout(r,1000*(attempt+1)));
+      }
+    }
+  };
   const startGrading=async()=>{
     if(!files.length){ notify("答案ファイルをアップロードしてください","error"); return; }
     if(!test?.sections?.length){ notify("採点基準が設定されていません","error"); return; }
-    setRunning(true); const all=[];
-    for(let i=0;i<files.length;i++){
-      const file=files[i];
-      setProgress({cur:i+1,total:files.length,status:`${file.name} を採点中...`});
-      try{
-        const b64=await fileToBase64(file);
-        if(file.type==="application/pdf"){
-          try{
-            const pages=await pdfToImages(file);
-            for(let p=0;p<pages.length;p++){
-              setProgress({cur:i+1,total:files.length,status:`${file.name} (${p+1}/${pages.length}ページ) を採点中...`});
-              try{
-                const result=await callGemini(pages[p],"image/jpeg",test.sections);
-                all.push({...result,fileName:`${file.name} (${p+1}ページ目)`});
-              }catch(err){
-                all.push({student_name:`エラー`,results:[],total_score:0,overall_comment:err.message,fileName:`${file.name} (${p+1}ページ目)`,error:true});
-              }
-            }
-          }catch(err){
-            all.push({student_name:`エラー`,results:[],total_score:0,overall_comment:err.message,fileName:file.name,error:true});
-          }
-        } else {
-          const result=await callGemini(b64,file.type,test.sections);
-          all.push({...result,fileName:file.name});
-        }
-      }catch(err){
-        all.push({student_name:`エラー`,results:[],total_score:0,overall_comment:err.message,fileName:file.name,error:true});
+    setRunning(true);
+    // Step1: 全ファイルをタスクに展開
+    notify("ファイルを読み込み中...");
+    const tasks=[];
+    for(const file of files){
+      if(file.type==="application/pdf"){
+        try{
+          const pages=await pdfToImages(file);
+          pages.forEach((p,idx)=>tasks.push({base64:p,mime:"image/jpeg",fileName:`${file.name} (${idx+1}ページ目)`}));
+        }catch(err){ tasks.push({base64:null,mime:null,fileName:file.name,error:err.message}); }
+      } else {
+        try{
+          const b64=await fileToBase64(file);
+          tasks.push({base64:b64,mime:file.type,fileName:file.name});
+        }catch(err){ tasks.push({base64:null,mime:null,fileName:file.name,error:err.message}); }
       }
+    }
+    // Step2: 3枚ずつ並列採点
+    const all=[];
+    const BATCH=3;
+    for(let i=0;i<tasks.length;i+=BATCH){
+      const batch=tasks.slice(i,i+BATCH);
+      setProgress({cur:Math.min(i+BATCH,tasks.length),total:tasks.length,status:`採点中... ${Math.min(i+BATCH,tasks.length)}/${tasks.length}件`});
+      const batchResults=await Promise.all(batch.map(async(task)=>{
+        if(task.error) return {student_name:"エラー",results:[],total_score:0,overall_comment:task.error,fileName:task.fileName,error:true};
+        try{
+          const result=await retryCallGemini(task.base64,task.mime,test.sections);
+          return {...result,fileName:task.fileName};
+        }catch(err){
+          return {student_name:"エラー",results:[],total_score:0,overall_comment:err.message,fileName:task.fileName,error:true};
+        }
+      }));
+      all.push(...batchResults);
     }
     setResults(all);setRunning(false);
   };
