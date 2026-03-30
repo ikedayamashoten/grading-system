@@ -577,9 +577,7 @@ function UploadScreen({test,onComplete,onBack,notify}){
       setProgress({cur:Math.min(i+BATCH,tasks.length),total:tasks.length,status:`採点中... ${Math.min(i+BATCH,tasks.length)}/${tasks.length}件`});
       const batchResults=await Promise.all(batch.map(async(task)=>{
         if(task.error) return {student_name:"エラー",results:[],total_score:0,overall_comment:task.error,fileName:task.fileName,error:true};
-        try{
-          const result=await retryCallGemini(task.base64,task.mime,test.sections);
-          return {...result,fileName:task.fileName};
+         const result=await retryCallGemini(task.base64,task.mime,test.sections);
         }catch(err){
           return {student_name:"エラー",results:[],total_score:0,overall_comment:err.message,fileName:task.fileName,error:true};
         }
