@@ -173,13 +173,14 @@ export default function App() {
   };
   const handleSaveResults=async(testId,results)=>{
     // エラーのない結果のみ保存
-    const validResults=results.filter(r=>!r.error);
-    if(!validResults.length){ notify("保存できる採点結果がありません","error"); return; }
-    // 氏名・点数が取れなかった分はファイル名で補完
-    validResults.forEach(r=>{
-      if(!r.student_name||r.student_name==="不明") r.student_name=r.fileName||"氏名不明";
-      if(r.total_score===undefined||r.total_score===null) r.total_score=0;
+    // すべての結果を保存（エラーのものも含む）
+    results.forEach(r=>{
+      if(!r.student_name||r.student_name==="不明"||r.student_name==="（氏名読取失敗）") r.student_name=r.fileName||"氏名不明";
+      if(r.total_score===undefined||r.total_score===null||isNaN(r.total_score)) r.total_score=0;
+      if(!r.results) r.results=[];
+      if(!r.overall_comment) r.overall_comment="";
     });
+    const validResults=results;
     if(!validResults.length){ notify("保存できる採点結果がありません","error"); return; }
     const rows=validResults.map(r=>({test_id:testId,school_id:school.id,student_name:r.student_name||"氏名不明",file_name:r.fileName||"",total_score:r.total_score||0,results:r.results||[],overall_comment:r.overall_comment||"",manually_adjusted:false}));
     const{error:re}=await supabase.from("grading_results").insert(rows);
