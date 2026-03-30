@@ -925,7 +925,7 @@ function SettingsPage({classes,subjects,onSave,notify}){
       <h2 className="text-2xl font-black text-slate-800">設定</h2>
       <div className="bg-emerald-50 border border-emerald-200 rounded-2xl p-6">
         <p className="font-black text-emerald-800">🔒 セキュリティ設定済み</p>
-        <p className="text-emerald-700 text-sm mt-1">Gemini APIキーはSupabase Edge Functionsに安全に隔離されています。パスワードはbcryptでハッシュ化されています。</p>
+        <p className="text-emerald-700 text-sm mt-1">system all green パスワードはbcryptでハッシュ化されています。</p>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <div className="bg-white rounded-2xl p-8 shadow-sm border border-slate-100 space-y-5">
