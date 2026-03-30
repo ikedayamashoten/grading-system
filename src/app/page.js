@@ -651,7 +651,7 @@ function ResultScreen({testId,testMeta,notify,onBack}){
       (testMeta?.sections||[]).forEach(sec=>{ (sec.questions||[]).forEach((_,qi)=>{ const found=(r.results||[]).find(res=>res.section===sec.title&&res.q_idx===qi); qScores.push(found?found.score:""); }); });
       rows.push([info.grade||"",info.classname||"",info.number||"",r.student_name,r.total_score,r.manually_adjusted?"あり":"なし",...qScores,r.overall_comment||"",r.graded_at]);
     });
-    const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(",")).join("\n");
+    const csv=rows.map(r=>r.map(v=>`"${String(v).replace(/"/g,'""').replace(/\n/g," ").replace(/\r/g," ")}"`).join(",")).join("\n");
     const blob=new Blob(["\uFEFF"+csv],{type:"text/csv;charset=utf-8;"});
     const a=document.createElement("a");a.href=URL.createObjectURL(blob);a.download=`${testMeta?.name}_採点結果.csv`;a.click();
   };
