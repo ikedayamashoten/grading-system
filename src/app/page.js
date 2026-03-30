@@ -74,7 +74,9 @@ async function callEdge(payload) {
 
 function extractJson(text) {
   // Markdownコードブロックを除去
+  console.log("extractJson input:", text.slice(0, 200));
   text = text.replace(/```json\s*/gi, "").replace(/```\s*/g, "").trim();
+  console.log("extractJson after clean:", text.slice(0, 200));
   const tryParse = (str) => {
     try { return JSON.parse(str); } catch(e) {}
     const fixed = str.replace(/"((?:[^"\\]|\\.)*)"/gs, (m, v) => {
