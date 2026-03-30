@@ -172,7 +172,10 @@ export default function App() {
     setTests(prev=>[data,...prev]); notify("テストを保存しました"); return data;
   };
   const handleSaveResults=async(testId,results)=>{
-    const rows=results.map(r=>({test_id:testId,school_id:school.id,student_name:r.student_name,file_name:r.fileName||"",total_score:r.total_score||0,results:r.results||[],overall_comment:r.overall_comment||"",manually_adjusted:false}));
+    // エラーのない結果のみ保存
+    const validResults=results.filter(r=>!r.error&&r.student_name&&r.student_name!=="不明"||(!r.error&&r.total_score>0));
+    if(!validResults.length){ notify("保存できる採点結果がありません","error"); return; }
+    const rows=validResults.map(r=>({test_id:testId,school_id:school.id,student_name:r.student_name||"氏名不明",file_name:r.fileName||"",total_score:r.total_score||0,results:r.results||[],overall_comment:r.overall_comment||"",manually_adjusted:false}));
     const{error:re}=await supabase.from("grading_results").insert(rows);
     if(re){ notify(re.message,"error"); return; }
     await supabase.from("tests").update({status:"採点完了"}).eq("id",testId);
